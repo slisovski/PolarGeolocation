@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1522044916740.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1644193754",
+    "id" : "9B2EA496",
+    "lastKnownWriteTime" : 1522403035,
+    "last_content_update" : 1522403035383,
+    "path" : "C:/Users/SLi/Dropbox/Science/Projects/ArcticBreeding/PolarGeolocation/R/PolarGeolocation.R",
+    "project_path" : "R/PolarGeolocation.R",
+    "properties" : {
+        "cursorPosition" : "278,44",
+        "scrollLine" : "238"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

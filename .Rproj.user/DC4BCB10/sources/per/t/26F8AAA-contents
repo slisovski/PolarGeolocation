@@ -1,0 +1,101 @@
+### Figure 3
+library(TwGeos)
+library(SGAT)
+
+### GREAT KNOT
+lon.calib <- 122.21 # Broome
+lat.calib <- -17.98
+
+raw <- readMTlux("F:/Deakin University/Marcel Klaassen - Klaassen-Lab/Geolocation/RawData/GreatKnot/D158.lux")
+raw$Light <- log(raw$Light)
+
+tm <- seq(min(raw$Date), max(raw$Date), by = "day")
+rise <- rep(c(TRUE, FALSE), length(tm))
+
+c.dat <- data.frame(Twilight = twilight(rep(tm, each = 2), lon = lon.calib, lat = lat.calib,
+                                        rise = rise, zenith = 96), Rise = rise)
+
+offset <- 4
+lightImage(raw, offset = offset, zlim = c(0, 7), dt = 120)
+tsimagePoints(c.dat$Twilight, offset = offset, pch = 16, cex = 0.25,
+              col = "orange")
+
+twl  <- preprocessLight(raw, threshold = 1, offset = offset, lmax = 12, gr.Device = "x11")
+
+  save(twl, file = "C:/Users/SLi/Dropbox/Temp/GKN.RData")
+  # twl <- twl[!twl$Deleted,]
+
+## Calibration Period
+d.calib.tm <- as.POSIXct(c("2013-04-10", "2013-05-28"), tz = "GMT")
+abline(v = d.calib.tm, col = "blue")
+d.calib.tm2 <- as.POSIXct(c("2013-09-15", "2013-11-01"), tz = "GMT")
+abline(v = d.calib.tm2, col = "blue")
+d.calib <- subset(raw, Date>=d.calib.tm[1] & Date<=d.calib.tm[2] |
+                       Date>=d.calib.tm2[1] & Date<=d.calib.tm2[2])
+
+d.calib.twl <- subset(twl, Twilight>=d.calib.tm[1] & Twilight<=d.calib.tm[2] |
+                           Twilight>=d.calib.tm2[1] & Twilight<=d.calib.tm2[2])
+
+library(zoo)
+library(MASS)
+calib <- getTemplateCalib(d.calib, d.calib.twl, lon.calib, lat.calib, bin = 2.5)
+
+### Map
+library(maptools); data(wrld_simpl)
+library(rgeos)
+library(rgdal)
+library(raster)
+
+xlim = lon.calib+c(-45, 45)
+ylim = c(-45, 50)
+
+
+bnd <- readOGR("F:/GeoDat/NaturalEarth/50m_cultural/ne_50m_admin_0_countries/ne_50m_admin_0_countries.shp")
+  proj4string(bnd) <- proj4string(wrld_simpl)
+
+map <- gIntersection(bnd, as(extent(c(xlim, ylim)), "SpatialPolygons"), byid = T)
+points(lon.calib, lat.calib, pch = "X", font = 2, cex  =2)
+plot(map)
+
+  r0   <- raster(xmn = xlim[1], xmx = xlim[2], ymn = ylim[1], ymx = ylim[2], res = 0.75)
+    proj4string(r0) <- proj4string(wrld_simpl)
+  crds <- coordinates(r0)
+
+tagdata <- d.calib[d.calib$Date>as.POSIXct("2013-05-10") &  d.calib$Date<as.POSIXct("2013-05-25"),]
+  window = 1
+
+templ <-  c()
+
+for(i in 1:nrow(crds)) {
+
+  date <- tagdata$Date
+
+  ### first split into segments
+  ss  <- solar(date)
+  zX  <- refracted(zenith(ss, crds[i,1], crds[i,2]))
+  ct  <- c(zX[-length(zX)]>zX[-1])
+  ct  <- c(ct, ct[length(ct)])
+
+  ### second split with adjusted twilights
+  date[!ct] <- date[!ct]-300
+  ss        <- solar(date)
+  zX        <- refracted(zenith(ss, crds[i,1], crds[i,2]))
+
+  ExpL  <- calib$MaxL(zX)
+  diffL <- (ExpL -  tagdata$Light)+1e-5
+
+  plot(tagdata$Date, tagdata$Light, pch = 16, las = 1, cex = 0.8, type = "n")
+  lines(tagdata$Date, ExpL, lwd = 3, col = adjustcolor("orange", alpha.f = 0.8))
+  points(tagdata$Date, tagdata$Light, pch = 16, cex = 0.75, col = ifelse(diffL<0, "black", "orange"))
+
+
+  templ <- c(templ, sum(diffL<0))
+
+}
+
+r0[] <- templ
+
+plot(r0, breaks = c(0, 1, max(r0[])), col = c("white", "grey90"), legend = FALSE)
+plot(map, add = T)
+points(lon.calib, lat.calib, pch = 21, cex = 2, bg = "white", col = "firebrick", lwd = 2)
+

@@ -1,0 +1,218 @@
+library(TwGeos)
+library(maptools); data(wrld_simpl)
+library(rgeos)
+library(rgdal)
+library(TwGeos)
+library(SGAT)
+library(raster)
+library(parallel)
+
+### MAP
+bnd <- readOGR("F:/GeoDat/NaturalEarth/50m_cultural/ne_50m_admin_0_countries/ne_50m_admin_0_countries.shp")
+proj4string(bnd) <- proj4string(wrld_simpl)
+
+
+
+
+### GREAT KNOT
+lon.calib <- 122.21 # Broome
+lat.calib <- -17.98
+
+raw <- readMTlux("F:/Deakin University/Marcel Klaassen - Klaassen-Lab/Geolocation/RawData/GreatKnot/D151.lux")
+  raw$Light <- log(raw$Light)
+
+tm <- seq(min(raw$Date), max(raw$Date), by = "day")
+rise <- rep(c(TRUE, FALSE), length(tm))
+
+c.dat <- data.frame(Twilight = twilight(rep(tm, each = 2), lon = lon.calib, lat = lat.calib,
+                                        rise = rise, zenith = 96), Rise = rise)
+
+offset <- 4
+lightImage(raw, offset = offset, zlim = c(0, 7), dt = 120)
+tsimagePoints(c.dat$Twilight, offset = offset, pch = 16, cex = 0.25,
+              col = "orange")
+
+
+twl  <- preprocessLight(raw, threshold = 1, offset = offset, lmax = 12, gr.Device = "x11")
+
+
+## Calibration Period
+d.calib.tm <- as.POSIXct(c("2013-03-10", "2013-03-28"), tz = "GMT")
+abline(v = d.calib.tm, col = "blue")
+d.calib.tm2 <- as.POSIXct(c("2013-09-01", "2013-10-05"), tz = "GMT")
+abline(v = d.calib.tm2, col = "blue")
+d.calib <- subset(raw, Date>=d.calib.tm[1] & Date<=d.calib.tm[2] |
+                       Date>=d.calib.tm2[1] & Date<=d.calib.tm2[2])
+
+d.calib.twl <- subset(twl, Twilight>=d.calib.tm[1] & Twilight<=d.calib.tm[2] |
+                           Twilight>=d.calib.tm2[1] & Twilight<=d.calib.tm2[2])
+
+
+
+## Breeding Period
+d.breed.tm <- as.POSIXct(c("2013-05-26", "2013-07-05"), tz = "GMT")
+abline(v = d.breed.tm, col = "blue")
+d.breed    <- subset(raw, Date>=d.breed.tm[1] & Date<=d.breed.tm[2])
+
+## Raw data plot
+opar <- par(mar = c(3,5,1,1), mgp = c(3,1,0), las = 1, cex.axis = 1.2, cex.lab = 1.5)
+plot(d.breed[1:5000,], type = "o", pch = 16, col = "grey10", cex = 0.6,  xlab = "", ylab = "Light (log lux)")
+par(opar)
+
+
+calib <- getTemplateCalib(tagdata = d.calib,
+                          twl = d.calib.twl,
+                          lon = lon.calib,
+                          lat = lat.calib,
+                          bin = 2.5,
+                          adjust = 300,
+                          plot = TRUE)
+
+# mask <- makeMask(c(135,62), 2000, res = 75, map = bnd, mask = "land", plot = TRUE)
+ll   <- templateEstimate(d.breed, calib, adjust = 300, mask = mask)
+sm   <- templateSummary(ll, mask, cutoff = 0)
+
+
+
+
+### SANDERLING
+library(GeoLight)
+
+lon.calib <- 140.50
+lat.calib <- -37.96
+
+
+raw <- readMTlux("F:/Deakin University/Marcel Klaassen - Klaassen-Lab/Geolocation/RawData/Sanderling/2019.lux", skip = 30)
+# raw <- readMTlux("~/Deakin University/Marcel Klaassen - Klaassen-Lab/Geolocation/RawData/Sanderling/2019.lux", skip = 30)
+raw$Light <- log(raw$Light)
+
+
+tm <- seq(min(raw$Date), max(raw$Date), by = "day")
+rise <- rep(c(TRUE, FALSE), length(tm))
+
+c.dat <- data.frame(Twilight = twilight(rep(tm, each = 2), lon = lon.calib, lat = lat.calib,
+                                        rise = rise, zenith = 96), Rise = rise)
+
+offset <- 4
+lightImage(raw, offset = offset, zlim = c(0, 15), dt = 120)
+tsimagePoints(c.dat$Twilight, offset = offset, pch = 16, cex = 0.25,
+              col = "orange")
+
+
+twl  <- preprocessLight(raw, threshold = 0.5, offset = offset, lmax = 15, gr.Device = "x11")
+
+
+## Calibration Period
+d.calib.tm <- as.POSIXct(c("2012-03-30", "2012-04-12"), tz = "GMT")
+abline(v = d.calib.tm, col = "blue")
+d.calib.tm2 <- as.POSIXct(c("2012-11-01", "2012-11-30"), tz = "GMT")
+abline(v = d.calib.tm2, col = "blue")
+d.calib <- subset(raw, Date>=d.calib.tm[1] & Date<=d.calib.tm[2] |
+                    Date>=d.calib.tm2[1] & Date<=d.calib.tm2[2])
+
+d.calib.twl <- subset(twl, Twilight>=d.calib.tm[1] & Twilight<=d.calib.tm[2] |
+                        Twilight>=d.calib.tm2[1] & Twilight<=d.calib.tm2[2])
+
+
+
+## Breeding Period
+d.breed.tm <- as.POSIXct(c("2012-06-17", "2012-07-26"), tz = "GMT")
+abline(v = d.breed.tm, col = "blue")
+d.breed <- subset(raw, Date>=d.breed.tm[1] & Date<=d.breed.tm[2])
+
+
+## Raw data plot
+opar <- par(mar = c(3,5,1,1), mgp = c(3,1,0), las = 1, cex.axis = 1.2, cex.lab = 1.5)
+plot(d.breed[1:5000,], type = "o", pch = 16, col = "grey10", cex = 0.6,  xlab = "", ylab = "Light (log lux)")
+par(opar)
+
+library(zoo)
+library(MASS)
+library(rgdal)
+library(parallel)
+library(rgeos)
+library(raster)
+
+calib <- getTemplateCalib(tagdata = d.calib,
+                          twl = d.calib.twl,
+                          lon = lon.calib,
+                          lat = lat.calib,
+                          bin = 2.5,
+                          adjust = 300,
+                          plot = TRUE)
+
+mask <- makeMask(c(135,70), 2000, res = 25, map = bnd, mask = "land", plot = TRUE)
+ll   <- templateEstimate(d.breed, calib, adjust = 300, mask = mask)
+sm   <- templateSummary(ll, mask, probs = c(0.0025, 0.005), cutoff = 2)
+
+
+
+
+
+
+### Bar-tailed godwit
+
+
+### Meta-data
+lon.calib <- 175.36
+lat.calib <- -40.78
+
+
+### 1 Step: Twilight times
+
+raw <- readMTlux("F:/Deakin University/Marcel Klaassen - Klaassen-Lab/Geolocation/RawData/Godwit/3898.lux", skip = 30)    #read the data into a dataframe called d.lig
+raw$Light<-log(raw$Light)
+
+tm <- seq(min(raw$Date), max(raw$Date), by = "day")
+rise <- rep(c(TRUE, FALSE), length(tm))
+
+c.dat <- data.frame(Twilight = twilight(rep(tm, each = 2), lon = lon.calib, lat = lat.calib,
+                                        rise = rise, zenith = 96), Rise = rise)
+
+offset <- 4
+lightImage(raw, offset = offset, zlim = c(0, 7), dt = 120)
+tsimagePoints(c.dat$Twilight, offset = offset, pch = 16, cex = 0.25,
+              col = "orange")
+
+
+twl  <- preprocessLight(raw, threshold = 0.5, offset = offset, lmax = 15, gr.Device = "x11")
+
+
+## Calibration Period
+d.calib.tm <- as.POSIXct(c("2013-02-12", "2013-03-1"), tz = "GMT")
+abline(v = d.calib.tm, col = "blue")
+d.calib.tm2 <- as.POSIXct(c("2013-10-05", "2014-01-18"), tz = "GMT")
+abline(v = d.calib.tm2, col = "blue")
+d.calib <- subset(raw, Date>=d.calib.tm[1] & Date<=d.calib.tm[2] |
+                       Date>=d.calib.tm2[1] & Date<=d.calib.tm2[2])
+
+
+d.calib.twl <- subset(twl, Twilight>=d.calib.tm[1] & Twilight<=d.calib.tm[2] |
+                           Twilight>=d.calib.tm2[1] & Twilight<=d.calib.tm2[2])
+
+
+
+## Breeding Period
+# d.breed.tm <- as.POSIXct(locator(n = 2)$x, origin = "1970-01-01", tz = "GMT")
+d.breed.tm <- as.POSIXct(c("2013-06-07", "2013-07-12"), tz = "GMT")
+abline(v = d.breed.tm, col = "blue")
+d.breed <- subset(raw, Date>=d.breed.tm[1] & Date<=d.breed.tm[2])
+
+
+## Raw data plot
+opar <- par(mar = c(3,5,1,1), mgp = c(3,1,0), las = 1, cex.axis = 1.2, cex.lab = 1.5)
+plot(d.breed[1:5000,], type = "o", pch = 16, col = "grey10", cex = 0.6,  xlab = "", ylab = "Light (log lux)")
+par(opar)
+
+calib <- getTemplateCalib(tagdata = d.calib,
+                          twl = d.calib.twl,
+                          lon = lon.calib,
+                          lat = lat.calib,
+                          bin = 2.5,
+                          adjust = 300,
+                          plot = TRUE)
+
+mask <- makeMask(c(200,63), 2000, res = 25, map = bnd, mask = "land", plot = TRUE)
+ll   <- templateEstimate(d.breed, calib, adjust = 300, mask = mask)
+sm   <- templateSummary(ll, mask, probs = c(0.025, 0.05), cutoff = 2)
+
