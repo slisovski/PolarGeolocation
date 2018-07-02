@@ -11,8 +11,8 @@ editor_options:
   chunk_output_type: console
 ---
 
-### Detailed explanation of the methods behind PolarGeolocaton, an R Package to estimte light-level geolcation data recorded in high latitudes with 24 hours daylight.
-**Lisovski, S. 2018 Light-level geolocation in high latitudes with 24 hours daylight. Journal**
+### Detailed explanation of the methods behind PolarGeolocation, an R Package to estimate light-level geolocation data recorded in high latitudes with 24-hours daylight.
+**Lisovski, S. 2018 Light-level geolocation in polar regions with 24-hour daylight. Wader Study **
 
 ## <a name="packages"></a>Install packages
 
@@ -25,14 +25,13 @@ install_github('slisovski/PolarGeolocation')
 Load package
 ```{r, warning=FALSE, message=FALSE}
 library(PolarGeolocation)
-library(maptools); data("wrld_simpl")
 ```
 
 ## <a name="introduction"></a>General introduction
 
-To be able to estimate locations based on light intensities recorded in high arctic/antartctic latitudes it is essential to use geolocators that recrods the entire light spectrum, allowing to detect even small changes in light intensity during periods when the sun is constantly above the horizon.
+To be able to estimate locations based on light intensities recorded in high arctic/antarctic latitudes it is essential to use geolocators that records the entire light spectrum, allowing to detect even small changes in light intensity during periods when the sun is constantly above the horizon.
 
-Additionally, it is highly important to have a period of recordings from known location (> 2 weeks) for calibration.
+Additionally, it is highly important to have a period of recordings from a known location (> 2 weeks) for calibration.
 
 The general workflow has four steps:
 
@@ -44,7 +43,7 @@ The general workflow has four steps:
 
 ## Data preparation and import
 
-The R Package `Polar Geolocation` provides an example calibration dateset from a Great Knot [Lisovski et al. 2016](#lisovski_2016) as well as data recoded in their arctic breeding grounds.
+The R Package `Polar Geolocation` provides an example calibration dataset from a Great Knot [Lisovski et al. 2016](#lisovski_2016) as well as data recoded in their arctic breeding grounds.
 
 Available data:
 
@@ -74,7 +73,7 @@ par(opar)
 
 ## 1. Calibration
 
-The function `getTemplateCalib` allows to calculate the maximum light values and the error distribution for a range of zenith angles.
+The function `getTemplateCalib` allows calculation of the maximum light values and the error distribution for a range of zenith angles.
 
 Within `getTemplateCalib`, the following parameters can be defined: 
 
@@ -82,8 +81,8 @@ Within `getTemplateCalib`, the following parameters can be defined:
 * `twl` - a dataframe with columns Twilight and Rise (e.g. `GRKN_twlCalib`). 
 * `lon` - calibration longitude.
 * `lat` – calibration latitude.
-* `bin` - the with of zenith ranges to estimate zenith specific maximum light value and error structure.
-* `adjust` - adjust twilights for tags that report the maximum light interval observed in the preceeding sampling interval.
+* `bin` - the width of zenith ranges to estimate zenith specific maximum light values and error structure.
+* `adjust` - adjust twilights for tags that report the maximum light interval observed in the preceding sampling interval.
 * `plot` – logical, if TRUE a final plot will be produced.
 
 ```{r, fig.width = 6.75, fig.height=5.25}
@@ -96,46 +95,43 @@ calib <- getTemplateCalib(tagdata = GRKN_calib,
                           plot = TRUE)
 ```
 
-The graph shows all light intensity recrodings from the calibratio data over zenith angles. Blue series indicate sunset periods and red series sunrise period. The vertical dashed lines are the bins for which the function calcualtes the maximum light and the error distribution (e.g. the paramteres of a gamma distribution).The black line with dots represent the template fit that will later be used to estimate coordinates of light recorded at unknown location.
+The graph shows all light intensity recordings from the calibration data over zenith angles. Blue series indicate sunset periods and red series sunrise period. The vertical dashed lines are the bins for which the function calculates the maximum light and the error distribution (e.g. the parameters of a gamma distribution). The black line with dots represents the template fit that will later be used to estimate coordinates of light recorded at unknown location.
 
-The calibration output is a data frame with the following columns:
+The calibration output is a list with the maximum light template as well as a data frame with the following columns:
 
-1. zMin - minimum zenith angle of the bin (row)
-2. zMax - maximum zenith angle of the bin (row)
-3. lMax - maximum light of the bin; the template.
-4. rate - rate parameter of the error distribution (gamma)
-5. shape - shape parameter of the error distribution (gamma)
+1. zMax - maximum zenith angle of the bin (row)
+2. rate - rate parameter of the error distribution (gamma)
+3. shape - shape parameter of the error distribution (gamma)
 
 
 ```{r}
-head(calib)
+head(calib$calibTab)
 ```
+
 
 ## 2. Spatial mask
 
-There are two main reasons to define a spatial mask. The most important one is to define the boundary box and resolution for the location estimates (xlim, ylim); both parameters define the processing speed of the estimation. The second reason is to exlude areas such as the ocean, in case the tracked animal must have been on land etc. Exlcuding areas can also significantly speed up the location estimation.
+There are two main reasons to define a spatial mask. The most important one is to define the boundary box and resolution for the location estimates (xlim, ylim); both parameters define the processing speed of the estimation. The second reason is to exclude areas such as the ocean, in case the tracked animal must have been on land etc. Excluding areas can also significantly speed up the location estimation.
 
 The function `makeMask` allows automatic compiling of a mask with the following parameters:
 
-* `lon` - extents of longitude. 
-* `lat` - extents of latitude.
-* `cell.size` - resolution in degrees (grid size)
+* `centre` - centre (lon, lat) of the mask. 
+* `radius` - radius around centre (in km).
+* `res`- resolutin, e.g. cell size in km.
 * `mask` - set mask for areas animals are assumed to be restricted to, "sea", "land", or "none".
-* `pacific` - optional Pacific-centred map, defaults to Atlantic-centred map.
+* `pacific` - optional Pacific-centered map, defaults to Atlantic-centered map.
 
  
 ```{r, fig.width=5.5, fig.height=5}
-xlim <- c(110, -160)
-ylim <- c(45, 75)
+xlim <- c(110, 180)
+ylim <- c(55, 80)
 
+    xcentre <- round(xlim[1] + diff(xlim)/2)
+    ycentre <- round(ylim[1] + diff(ylim)/2)
 
-library(rgdal)
-library(rgeos)
-library(raster)
-library(parallel)
-
-mask <- makeMask(c(140, 55), 2500, res = 100, mask = "land", plot = TRUE)
+mask <- makeMask(c(xcentre, ycentre), 2500, res = 100, mask = "land", plot = TRUE)
 ```
+ 
  
 ## 3. Maximum likelihood estimates
 
@@ -143,29 +139,27 @@ The principle behind `templateEstimate` has been described in detail in [Lisovsk
 
 * `tagdata` -  a dataframe with columns Date and Light that are the sequence of sample times (as POSIXct) and light levels recorded by the tag (e.g. `GRKN_breed`).                            
 * `calibration` - a dataframe with the same structure as provided by the function `getTemplateCalib`. 
-* `window` - the number of days (24 hours) to bin in slices and estiamte the location probabilites, e.g. 4 means that 4 subsequent days will be used to estimate one layer of log-likelihoods. This window is similar to a runing window and days will be used multible times centered around every day along the time series of 'tagdata'.
+* `window` - the number of days (24 hours) to bin in slices and estimate the location probabilities, e.g. 4 means that 4 subsequent days will be used to estimate one layer of log-likelihoods. This window is similar to a running window and days will be used multiple times centered around every day along the time series of 'tagdata'.
 * `adjust` - adjust twilights for tags that report the maximum light interval observed in the preceeding sampling interval.
 * `mask` - the spatial maks (raster) produced by `makeMask`.
 * `cores`- the number of cores available for this calculation (default is all cores -1).
 
-The function first splits the recordings into slices for each day and the sourrounding days according to the paramter `window`. Next, the log-likelihood of the each slice and for each grid-cell (of the mask) is estimated using the calibration paramters. Depending on the extent and resolution as well as the number of slices, this process may take several minutes.
+The function first splits the recordings into slices for each day and the surrounding days according to the parameter `window`. Next, the log-likelihood of each slice and for each grid-cell (of the mask) is estimated using the calibration parameters. Depending on the extent and resolution as well as the number of slices, this process may take several minutes.
 
 Here, we estimate the locations for the calibration location as well as the location for the breeding site.
 
-```{r, message=FALSE, warning=FALSE}
-ll <- templateEstimate(GRKN_breed, calib, adjust = 300, mask = mask)
-```
 
+```{r, message=FALSE, warning=FALSE}
+ll <- templateEstimate(GRKN_breed, calib, adjust = 300, mask = mask, message = FALSE)
+```
 
 ## 4. Summary/Plotting
 
-```{r}
-templateSummary(te, prob = c(0.6), select = c(10,30))
+
+```{r, fig.height=10, fig.width=10}
+sm <- templateSummary(ll, mask, probs = c(0.05, 0.1), cutoff = 5)
 ```
 
-```{r}
-templateSummary(te, prob = c(0.6), select = c(10,30))
-```
 
 
 ## References
@@ -173,7 +167,8 @@ templateSummary(te, prob = c(0.6), select = c(10,30))
 Lisovski, S., K. Gosbell, C. Hassell & C. Minton. 2016. Tracking the full annual-cycle of the Great Knot Calidris
 tenuirostris, a long-distance migratory shorebird of the East Asian-Australasian Flyway. _Wader Study_ 123(3). doi:10.18194/ws.00048. <a id="lisovski_2016"></a>
 
-Lisovski, S. 2018 PolarGeolocation Paper. XXX <a id="lisovski_2018"></a>
+Lisovski, S. 2018 Light-level geolocation in polar regions with 24-hour daylight. _Wader Study_ 125(2) XXX <a id="lisovski_2018"></a>
+
 
 
 

@@ -1,29 +1,37 @@
-##' Calibration function
-##'
-##' ...
-##'
-##' The \code{adjust.interval} argument can be used to specify a
-##' timing adjustment for tags that report the maximum light level
-##' observed in the preceeding sampling interval. If this argument is
-##' zero, no adjustment is made, otherwise the timestamps of sunset
-##' intervals will be adjusted by this interval to compensate for the
-##' recording behaviour of the tag.
-##'
-##' @title Calibration function
-##'
-##' @param tagdata a dataframe with columns \code{Date} and
-##' \code{Light} that are the sequence of sample times (as POSIXct)
-##' and light levels recorded by the tag at known location.
-##' @param twl a dataframe with columns \code{Twilight} and
-##' \code{Rise} that are the sequence of defined sunrise and sunset times.
-##' @param lon calibration longitude.
-##' @param lat calibration latitude.
-##' @param bin the grouping factor of light recordings across zenith angles.
-##' @param adjust  timing adjustment for sunset intervals.
-##' @param plot logical, if \code{TRUE} a plot will be shown.
-##' @return a dataframe with one row for each bin of zenith angles. Columns provide minimum and maximum zenith
-##' angle (range), maximum light value (the template) and the rate and scale paramters of a fitted gamma distribution.
-##' @export
+#' Creates a calibration table
+#'
+#'A central function for the location estimation process. This function creates a table
+#'with estimated maximum light template as well as gamma distribution parameters for the
+#'recorded light across intervals (bins) of zenith angles.
+#'
+#'Note: Plase refer to publication in Wader Study for detailed information (Lisovski 2018).
+#'
+#' The \code{adjust.interval} argument can be used to specify a
+#' timing adjustment for tags that report the maximum light level
+#' observed in the preceeding sampling interval. If this argument is
+#' zero, no adjustment is made, otherwise the timestamps of sunset
+#' intervals will be adjusted by this interval to compensate for the
+#' recording behaviour of the tag.
+#'
+#' @title Calibration function
+#'
+#' @param tagdata a dataframe with columns \code{Date} and
+#' \code{Light} that are the sequence of sample times (as POSIXct)
+#' and light levels recorded by the tag at known location.
+#' @param twl a dataframe with columns \code{Twilight} and
+#' \code{Rise} that are the sequence of defined sunrise and sunset times.
+#' @param lon calibration longitude.
+#' @param lat calibration latitude.
+#' @param bin the grouping factor of light recordings across zenith angles.
+#' @param adjust  timing adjustment for sunset intervals.
+#' @param plot logical, if \code{TRUE} a plot will be shown.
+#' @return a dataframe with one row for each bin of zenith angles. Columns provide minimum and maximum zenith
+#' angle (range), maximum light value (the template) and the rate and scale paramters of a fitted gamma distribution.
+#' @importFrom MASS fitdistr
+#' @importFrom zoo na.approx
+#' @importFrom graphics par plot lines mtext polygon abline
+#' @importFrom GeoLight solar zenith refracted
+#' @export
 getTemplateCalib <- function(tagdata,
                              twl,
                              lon,
@@ -152,19 +160,23 @@ getTemplateCalib <- function(tagdata,
 
 
 
-#' Make a mask (grid) for PolarGeolocation model incorporating land or sea mask (or none)
+#' Creates a spatial mask/grid
+#'
+#' This function creates a rectangular grid using an equal area projection around a defined centre.
+#' Furthermore it uses defines boundaries and probabilities for possible locations (e.g. land vs. ocean).
+#'
+#' @title Spatial mask/grid
 #'
 #' @param centre centre (lon, lat) of the mask.
 #' @param radius radius around the centre (in km).
 #' @param res resolution of grid cells in km, defaults to 150
 #' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
 #' @param map the map (spatial polygon) that will be used to define land and sea. If `NULL` the dataset `wrld_simpl` from the package `maptools` will be used.
-#' @import maptools
-#' @import polyclip
-#' @import raster
-#' @import rgdal
-#' @import rgeos
-#' @import sp
+#' @importFrom sp SpatialPolygons Polygons Polygon spTransform over
+#' @importFrom rgeos gIntersection gBuffer
+#' @importFrom raster raster rasterize
+#' @importFrom rgdal spTransform
+#' @importFrom graphics plot points par
 #' @return raster object giving the locations the animal may have visited
 #' @export
 makeMask <- function(centre,
@@ -235,15 +247,34 @@ makeMask <- function(centre,
 }
 
 
-
-
+#' Location Estimation
+#'
+#' This function uses the calibration table to evaluate the likelihood that the light has been recorded at any location of the grid.
+#'
+#' @title Calculation of spatial likelihood surface
+#'
+#' @param tagdata a dataframe with columns \code{Date} and
+#' \code{Light} that are the sequence of sample times (as POSIXct)
+#' and light levels recorded by the tag at known location.
+#' @param calibration calibration table created by \code{getTemplateCalib}.
+#' @param window number of days (24h) to put together for likelihood estimation (see details).
+#' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
+#' @param useMask logical, if \code{TRUE}, the mask is not only used to define the spatial extent but the pre-defined likelihoods (e.g. land vs. ocean) will be taken into account.
+#' @param cores parallel computing if >1.
+#' @param message logical, if TRUE messages reporting the progress will be printed in the console.
+#' @importFrom GeoLight solar refracted zenith
+#' @importFrom stats dlnorm
+#' @importFrom parallel makeCluster clusterSetRNGStream clusterExport clusterEvalQ parApply stopCluster
+#'
+#' @export
 templateEstimate <- function(tagdata,
                              calibration,
                              window = 1,
                              adjust = 300,
                              mask,
                              useMask = FALSE,
-                             cores = detectCores()-1) {
+                             cores = detectCores()-1,
+                             message = TRUE) {
 
   # Define segment by date
   seg  <- floor((as.numeric(tagdata$Date)- as.numeric(min(tagdata$Date)))/(24*60*60))
@@ -291,29 +322,33 @@ templateEstimate <- function(tagdata,
   }
 
 
-  cat("making cluster\n")
-  mycl <- parallel::makeCluster(cores)
-  tmp  <- parallel::clusterSetRNGStream(mycl)
-  tmp  <- parallel::clusterExport(mycl,c("slice", "calibration", "logp"), envir=environment())
-  tmp  <- parallel::clusterEvalQ(mycl, library("SGAT"))
+  if(message) cat("making cluster\n")
+  mycl <- makeCluster(cores)
+  tmp  <- clusterSetRNGStream(mycl)
+  tmp  <- clusterExport(mycl,c("slice", "calibration", "logp"), envir=environment())
+  tmp  <- clusterEvalQ(mycl, library("GeoLight"))
 
   ## Compute likelihood
   ll <- array(dim = c(nrow(pts), n, 2))
 
   for(i in 1:n) {
 
-    cat("\r", "window", i, " of ", n)
-    flush.console()
+    if(message) {
+      cat("\r", "window", i, " of ", n)
+      flush.console()
+    }
 
-    ll[,i,] <- t(parallel::parApply(mycl, pts, 1, FUN = logp, w = i, adjust = adjust))
+    ll[,i,] <- t(parApply(mycl, pts, 1, FUN = logp, w = i, adjust = adjust))
 
   }
 
-  end <- parallel::stopCluster(mycl)
+  end <- stopCluster(mycl)
 
   list(crds = pts, probTab = ll)
 
 }
+
+
 
 
 
@@ -329,8 +364,8 @@ templateSummary <- function(tempEst,
 
   crdsLL <- project(tempEst$crds[,1:2], proj = proj4string(mask$map))
 
-    mLik   <- apply(ll$probTab[,,1], 1, function(x) sum(x))
-    ind    <- apply(ll$probTab[,,2], 1, function(x) sum(x)>cutoff)
+    mLik   <- apply(tempEst$probTab[,,1], 1, function(x) sum(x))
+    ind    <- apply(tempEst$probTab[,,2], 1, function(x) sum(x)>cutoff)
       tt     <- rasterize(crdsLL[!ind,], mask$grid, field = mLik[!ind])
       tt[]   <- values(tt)/max(values(tt), na.rm = T)
 
