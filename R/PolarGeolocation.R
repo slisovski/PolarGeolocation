@@ -104,7 +104,7 @@ getTemplateCalib <- function(tagdata,
 
   t1 <- maxTab[maxTab[,1]>max(maxTab[which(maxTab[,2]==max(tagdata$Light)),1]) &
                maxTab[,2]>min(tagdata$Light) &
-               maxTab[,1]<quantile(tagdata$Elev[tagdata$Light==0], probs = 0.1) &
+               maxTab[,1]<quantile(tagdata$Elev[tagdata$Light==min(tagdata$Light)], probs = 0.1) &
                maxTab[,2]<max.light.fit  , ]
   mod <- lm(l~z, data = as.data.frame(t1))
      # points(as.data.frame(t1), pch = 16)
