@@ -1,0 +1,87 @@
+# Script for Polar Geolocation analysis
+# based on Vignette by Simeon Lisovski - https://github.com/slisovski/PolarGeolocation
+
+
+
+#### load packages ####
+
+library(PolarGeolocation)
+library(SGAT)
+library(zoo)
+library(maptools); data("wrld_simpl")
+require(magrittr)
+
+
+
+#### load data ####
+
+df <- TwGeos::readMTlux("C:/Users/SLi/Downloads/C800.lux") %>%
+  # exclude first day as tag wasn't fitted until 19th March
+  subset(Date > as.POSIXct('2013-03-20', format='%Y-%m-%d', tz='GMT'))
+df$Light %<>% log # log transform to stretch low light levels
+
+twl <- read.csv('C:/Users/SLi/Downloads/C800_edited_twilights.csv')
+twl$Twilight %<>% as.POSIXct()
+
+
+#### Calibration ####
+
+### split into 'calibration' (known location) and 'breeding' datasets
+
+## calibration period
+# longest possible calibration period (after breeding season) - based on colour ring records
+df_calib <- subset(df, Date > as.POSIXct('2013-08-12') & Date < as.POSIXct('2013-10-29'))
+twl_calib <- subset(twl, Twilight > as.POSIXct('2013-08-12') & Twilight < as.POSIXct('2013-10-29'))
+
+# earliest possible calibration period (before migration)
+# df_calib <- subset(df, Date < as.POSIXct('2013-04-20'))
+# twl_calib <- subset(twl, Twilight < as.POSIXct('2013-04-20'))
+
+
+## breeding period - based on movements from other packages & direct obs. of light levels
+df_breed <- subset(df, Date > as.POSIXct('2013-05-16') & Date < as.POSIXct('2013-06-21'))
+
+
+# perform calibration
+calib <- getTemplateCalib(tagdata = df_calib,
+                          twl = twl_calib,
+                          lon = -0.922985, # lon/lat of ringing location
+                          lat = 50.831748, # roost at Thorney Island, UK
+                          bin = 2.5,
+                          adjust = 300, # tag records max light every 300 seconds
+                          plot = TRUE)
+
+
+
+#### Spatial mask ####
+
+library(rgdal)
+library(rgeos)
+library(raster)
+library(parallel)
+
+# arguments: lon/lat of center, radius, resolution, land/sea, plot T/F
+mask <- makeMask(c(21, 62.5), 1300, res = 50, mask = "land", plot = TRUE)
+
+
+
+#### likelihood model ####
+
+ll <- templateEstimate(df_breed, calib, adjust = 300, mask = mask, window=3)
+
+
+
+#### Summary/Plotting ####
+
+# default cutoff returns error
+templateSummary(ll, mask, probs = c(0.05, 0.1))
+
+
+# use percentiles to select a cutoff of likelihoods for location estimates
+cuts <- apply(ll$probTab[,,2], 1, function(x) sum(x))%>%quantile(probs=seq(0, 1, .1)); cuts
+
+# choice of cutoff influences estimated location: higher cutoff -> further south
+templateSummary(ll, mask, probs = c(0.05, 0.1), cutoff = cuts[2]) # use 10% percentile
+templateSummary(ll, mask, probs = c(0.05, 0.1), cutoff = cuts[3]) # use 20% percentile
+templateSummary(ll, mask, probs = c(0.05, 0.1), cutoff = cuts[4]) # use 30% percentile
+

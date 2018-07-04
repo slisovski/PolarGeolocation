@@ -38,6 +38,7 @@ getTemplateCalib <- function(tagdata,
                              lat,
                              bin = 1,
                              adjust = 300,
+                             max.light.fit = NULL,
                              plot = TRUE) {
 
   ### first split into segments
@@ -99,9 +100,15 @@ getTemplateCalib <- function(tagdata,
     maxTab   <- rbind(maxTab, cbind(z = apply(bin.seq, 1, mean), l = unlist(maxTmp)))
   }
 
-  t1 <- maxTab[maxTab[,1]>max(maxTab[which(maxTab[,2]==max(tagdata$Light)),1]) & maxTab[,2]>min(tagdata$Light), ]
+  if(is.null(max.light.fit)) max.light.fit <- max(maxTab[,2], na.rm = T)
+
+  t1 <- maxTab[maxTab[,1]>max(maxTab[which(maxTab[,2]==max(tagdata$Light)),1]) &
+               maxTab[,2]>min(tagdata$Light) &
+               maxTab[,1]<quantile(tagdata$Elev[tagdata$Light==0], probs = 0.1) &
+               maxTab[,2]<max.light.fit  , ]
   mod <- lm(l~z, data = as.data.frame(t1))
-  # abline(mod)
+     # points(as.data.frame(t1), pch = 16)
+     # abline(mod)
 
   zNew <- seq((max(tagdata$Light) -coefficients(mod)[1])/coefficients(mod)[2],
               (min(tagdata$Light) -coefficients(mod)[1])/coefficients(mod)[2], length = 50)

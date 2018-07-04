@@ -1,0 +1,22 @@
+Package: PolarGeolocation
+Type: Package
+Title: R Package: Light-level geolocation analysis tool for data recorded in high latitudes
+Version: 0.1.0
+Author: Simeon Lisovski
+Maintainer: Simeon Lisovski <Simeon.lisovski@gmail.com>
+Description: Package specifically created to estimate breeding sites in high 
+  Arctic breeding waders carrying a geolocator that measures the full light spectrum. 
+  While it is created for this specific purpose the method can be applied to 
+  geolocator data in general. Locations are estimated using a template-fit approach.
+Depends: GeoLight,
+         zoo,
+         MASS,
+         raster,
+         rgdal,
+         rgeos,
+         sp,
+         parallel
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 6.0.1

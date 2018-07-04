@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1530532343794.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "1119236075",
+    "id" : "5E3C9357",
+    "lastKnownWriteTime" : 1530534414,
+    "last_content_update" : 1530534414883,
+    "path" : "C:/Users/SLi/Downloads/C800-PG_forSL.R",
+    "project_path" : null,
+    "properties" : {
+        "cursorPosition" : "85,64",
+        "scrollLine" : "38"
+    },
+    "relative_order" : 3,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}
