@@ -166,193 +166,201 @@ getTemplateCalib <- function(tagdata,
 }
 
 
-
-#' Creates a spatial mask/grid
+#' Initialise mask
 #'
-#' This function creates a rectangular grid using an equal area projection around a defined centre.
-#' Furthermore it uses defines boundaries and probabilities for possible locations (e.g. land vs. ocean).
 #'
-#' @title Spatial mask/grid
-#'
-#' @param centre centre (lon, lat) of the mask.
-#' @param radius radius around the centre (in km).
-#' @param res resolution of grid cells in km, defaults to 150
-#' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
-#' @param map the map (spatial polygon) that will be used to define land and sea. If `NULL` the dataset `wrld_simpl` from the package `maptools` will be used.
-#' @importFrom sp SpatialPolygons Polygons Polygon spTransform over
-#' @importFrom rgeos gIntersection gBuffer
-#' @importFrom raster raster rasterize
-#' @importFrom rgdal spTransform
-#' @importFrom graphics plot points par
-#' @return raster object giving the locations the animal may have visited
-#' @export
-makeMask <- function(centre,
-                     radius,
-                     res = 150,
+initMask <- function(tagdata,
+                     calibration,
+                     res = 50,
+                     adjust = 300,
+                     quantile = 0.85,
+                     hemisphere = "north",
                      mask = "land",
-                     map = NULL,
                      plot = FALSE) {
 
+  require(sf)
+  sf_use_s2(FALSE)
+  require(stars)
+  require(dplyr)
+  require(ggplot2)
+
   if(is.null(map)) {
-    data(wrld_simpl, package = "maptools", envir = environment())
+    if(hemisphere=="north") {
+        proj_start <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, 90)
     } else {
-      if(class(map)%in%c("SpatialPolygonsDataFrame", "SpatialPolygons")) {
-      wrld_simpl <- map
-      } else {
-        stop("map needs to be of class 'SpatialPolygonsDataFrame' or 'SpatialPolygons'")
-      }
-   }
+        proj_start <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, -90)
+    }
+    bbox <- st_point(c(0,0)) %>% st_sfc() %>% st_set_crs(proj_start) %>% st_buffer(30e5)
 
-
-  proj <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", centre[1], centre[2])
-
-  # Circle
-  angle.inc <- 2 * pi/100
-  angles <- seq(0, 2 * pi - angle.inc, by = angle.inc)
-  xv <- cos(angles) * radius*1000 + centre[1]
-  yv <- sin(angles) * radius*1000 + centre[2]
-
-  mp  <- spTransform(wrld_simpl, CRSobj = CRS(proj))
-  mpb <- gBuffer(mp, byid=TRUE, width=0)
-
-  circ <- SpatialPolygons(list(Polygons(list(Polygon(cbind(c(xv,xv[1]), c(yv,yv[1])))),ID=1)), proj4string=CRS(proj))
-  wrld <- gIntersection(mpb, circ, byid=FALSE)
-
-  r0  <- raster(xmn = extent(circ)[1], xmx = extent(circ)[2],
-                ymn = extent(circ)[3], ymx = extent(circ)[4], val = 0, res = res*1000)
-  proj4string(r0) <- proj
-
-  grid <- rasterize(wrld, r0, 1)
-  grid <- is.na(grid)
-
-  switch(mask,
-         sea = {},
-         land = {
-           grid <- subs(grid, data.frame(c(0,1), c(1,0)))},
-         none = {
-           grid <- subs(grid, data.frame(c(0,1), c(1,1)))
-         }
-  )
-
-  out <- cbind(coordinates(grid), grid[])
-  ind <- over(SpatialPoints(out[,1:2], proj4string = CRS(proj)), circ)
-
-
-  if(plot) {
-    opar <- par(mar = c(1,1,1,1))
-    plot(wrld)
-    points(out[ind==1,1:2], pch = 16, cex = 0.2,
-           col = ifelse(out[ind==1,3]==1, adjustcolor("orange", alpha.f = 0.9),
-                        adjustcolor("grey10", alpha.f = 0.9)))
-    par(opar)
+    map <- rnaturalearth::ne_countries(scale = 50) %>%
+      st_geometry() %>% st_union() %>%
+      st_transform(proj_start) %>% st_intersection(bbox) %>% suppressMessages()
   }
 
-  crds0 <- project(matrix(out[ind==1,1:2], ncol = 2, byrow = F), proj, inv = T)
-    crds <- cbind(crds0, mask = out[ind==1,3])
-    crds <- crds[!is.na(crds[,3]),]
-  list(crds, map = wrld, grid = grid)
+  mapRast <- st_rasterize(map %>% st_as_sf(), st_as_stars(st_bbox(map), dx = res*1000, dy = res*1000, values = NA_real_))
+
+  if(mask!="land") {
+    mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
+  }
+
+  crds    <- st_as_sf(mapRast, na.rm = FALSE) %>% st_centroid() %>% st_transform(4326) %>%
+    st_coordinates() %>% suppressMessages() %>% suppressWarnings()
+
+  mapRast <- mapRast %>% mutate(lon = crds[,1], lat = crds[,2]) %>% merge(names = 'layers')
+
+  testOut <- st_apply(mapRast, 1:2, function(x) {
+
+    if(!is.na(x[1])) {
+
+    date <- tagdata$Date
+    ss   <- solar(date)
+    zX   <- refracted(zenith(ss, x[2], x[3]))
+    ct   <- c(zX[-length(zX)]>zX[-1])
+    ct   <- c(ct, ct[length(ct)])
+
+    if(!is.null(adjust)) {
+      date[!ct] <- date[!ct]-adjust
+      ss        <- solar(date)
+      zX        <- refracted(zenith(ss, x[2], x[3]))
+    }
+
+    ExpL  <- calibration$MaxL(zX)
+    diffL <- (ExpL -  tagdata$Light)+1e-5
+
+    ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+    sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
+
+    } else NA
+
+  }, FUTURE = TRUE)
+
+  cont <-  testOut %>% setNames("probs") %>% mutate(probs = probs >= quantile(probs, probs = quantile, na.rm = T)) %>%
+    st_as_sf() %>% filter(probs) %>% st_union()
+
+  if(plot) {
+  pl <- ggplot() +
+    geom_stars(data = testOut, show.legend = F) +
+    scale_fill_binned(type = "viridis", na.value = "transparent") +
+    geom_sf(data = map, fill = NA, linewidth = 0.5) +
+    geom_sf(data = cont, fill = NA, color = "red", linewidth = 0.85) +
+    theme_void()
+  print(pl)
+  }
+
+  cont
+
 }
 
 
 #' Location Estimation
 #'
-#' This function uses the calibration table to evaluate the likelihood that the light has been recorded at any location of the grid.
-#'
-#' @title Calculation of spatial likelihood surface
-#'
-#' @param tagdata a dataframe with columns \code{Date} and
-#' \code{Light} that are the sequence of sample times (as POSIXct)
-#' and light levels recorded by the tag at known location.
-#' @param calibration calibration table created by \code{getTemplateCalib}.
-#' @param window number of days (24h) to put together for likelihood estimation (see details).
-#' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
-#' @param useMask logical, if \code{TRUE}, the mask is not only used to define the spatial extent but the pre-defined likelihoods (e.g. land vs. ocean) will be taken into account.
-#' @param cores parallel computing if >1.
-#' @param message logical, if TRUE messages reporting the progress will be printed in the console.
-#' @importFrom GeoLight solar refracted zenith
-#' @importFrom stats dlnorm
-#' @importFrom parallel makeCluster clusterSetRNGStream clusterExport clusterEvalQ parApply stopCluster
-#'
-#' @export
 templateEstimate <- function(tagdata,
                              calibration,
-                             window = 1,
+                             bbox = bbox,
+                             res = 15,
+                             window = 24,
                              adjust = 300,
-                             mask,
-                             useMask = FALSE,
-                             cores = detectCores()-1,
-                             message = TRUE) {
+                             quantile = c(0.4, 0.6),
+                             mask = "land",
+                             cutoff = 3,
+                             parallel = TRUE,
+                             ncores = 4,
+                             path = FALSE,
+                             plot = TRUE) {
 
-  # Define segment by date
-  seg  <- floor((as.numeric(tagdata$Date)- as.numeric(min(tagdata$Date)))/(24*60*60))
-  nseg <- length(unique(seg))
+    require(sf)
+    sf_use_s2(FALSE)
+    require(stars)
+    require(dplyr)
+    require(ggplot2)
 
-  ind <- cbind(c(1:nseg)[-c((nseg-(window-1)):nseg)], c(1:nseg)[-c(1:window)])
+    bbox_out <- bbox %>% st_bbox %>% st_as_sfc(st_set_crs(bbox))
+    proj     <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea",
+                        (bbox_out %>% st_centroid() %>% st_transform(4326) %>% st_coordinates())[,1],
+                        (bbox_out %>% st_centroid() %>% st_transform(4326) %>% st_coordinates())[,2])
 
-  # Split into `slices`
-  slice <- apply(ind, 1, function(x) tagdata[seg%in%c(x[1]:x[2]),])
+    map <- rnaturalearth::ne_countries(scale = 50) %>%
+        st_geometry() %>% st_union() %>%
+        st_transform(proj) %>% st_intersection(bbox_out %>% st_transform(proj)) %>% suppressMessages()
 
-  n   <- length(slice)
-  if(useMask) pts <- mask[[1]][mask[[1]][,3]==1,1:2] else pts <- mask[[1]]
+    mapRast <- st_rasterize(map %>% st_as_sf(), st_as_stars(st_bbox(map), dx = res*1000, dy = res*1000, values = NA_real_))
 
-
-  logp <- function(c, w, adjust) {
-
-    date <- slice[[w]]$Date
-
-    ### first split into segments
-    ss  <- solar(date)
-    zX  <- refracted(zenith(ss, c[1L], c[2L]))
-    ct  <- c(zX[-length(zX)]>zX[-1])
-    ct  <- c(ct, ct[length(ct)])
-
-    ### second split with adjusted twilights
-    if(!is.null(adjust)) {
-      date[!ct] <- date[!ct]-adjust
-      ss        <- solar(date)
-      zX        <- refracted(zenith(ss, c[1L], c[2L]))
+    if(mask!="land") {
+      mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
     }
 
-    ExpL  <- calibration$MaxL(zX)
-    diffL <- (ExpL -  slice[[w]]$Light)+1e-5
+    crds <- mapRast %>% st_as_sf() %>% st_centroid() %>% st_transform(4326) %>% st_coordinates() %>% suppressWarnings()
 
-    # plot(slice[[w]]$Date, slice[[w]]$Light, type = "o", pch = 16, col = adjustcolor("grey", alpha.f = 0.5))
-    # points(slice[[w]]$Date, ExpL, type = "o", cex = 0.5)
-    # par(new = TRUE)
-    # plot(date, diffL, type = "l", xaxt = "n", xaxt = "n", lwd = 2, col = "orange")
-    # axis(4)
-
-    ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-    out1  <- unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE)))
-
-    cbind(sum(out1, na.rm = T), ifelse(all(zX<=calibration$cut), 100, sum(diffL<0)))
-  }
+    dat  <- tagdata %>% as_tibble()
+    ss   <- solar(dat$Date)
+    zX   <- refracted(zenith(ss,
+                (bbox_out %>% st_transform(proj) %>% st_centroid() %>% st_centroid() %>% st_coordinates())[,1],
+                (bbox_out %>% st_transform(proj) %>% st_centroid() %>% st_centroid() %>% st_coordinates())[,2]))
+    dat  <- dat %>% mutate(ct = c(c(zX[-length(zX)]>zX[-1]), TRUE),
+                           Date = as.POSIXct(ifelse(!ct, Date - adjust, Date), origin = "1970-01-01")) %>%
+            group_split(Window = cut(as.numeric((Date - Date[1])/60/60), window*c(0:100), labels = FALSE, include.lowest = T))
 
 
-  if(message) cat("making cluster\n")
-  mycl <- makeCluster(cores)
-  tmp  <- clusterSetRNGStream(mycl)
-  tmp  <- clusterExport(mycl,c("slice", "calibration", "logp"), envir=environment())
-  tmp  <- clusterEvalQ(mycl, library("GeoLight"))
+    if(parallel) {
 
-  ## Compute likelihood
-  ll <- array(dim = c(nrow(pts), n, 2))
+        require(parallel)
+        cl <- makeCluster(getOption("cl.cores", ncores))
+        clusterExport(cl, c('crds', "calibration"))
+        clusterEvalQ(cl, {
+          library(SGAT)
 
-  for(i in 1:n) {
+        })
 
-    if(message) {
-      cat("\r", "window", i, " of ", n)
-      flush.console()
+        test <- parLapply(cl, dat, function(x) {
+            p_log <- apply(crds, 1, function(p) {
+                          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
+                          ExpL  <- calibration$MaxL(zX)
+                          diffL <- (ExpL -  x$Light)+1e-5
+
+                          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+                          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
+                        })
+            p_log
+        }) %>% Reduce("cbind", .)
+    } else {
+      test <- lapply(dat, function(x) {
+        p_log <- apply(crds, 1, function(p) {
+          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
+          ExpL  <- calibration$MaxL(zX)
+          diffL <- (ExpL -  x$Light)+1e-5
+
+          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
+        })
+        p_log
+      }) %>% Reduce("cbind", .)
     }
 
-    ll[,i,] <- t(parApply(mycl, pts, 1, FUN = logp, w = i, adjust = adjust))
+    if(parallel) stopCluster(cl)
 
-  }
+    maxPts <- as_tibble(cbind(crds, p = apply(test[,-c(1:cutoff, (ncol(test)-cutoff+1):ncol(test))], 1, max))) %>%
+      setNames(c("X", "Y", "p"))
 
-  end <- stopCluster(mycl)
+    if(plot) {
+      pl <- ggplot() +
+        geom_point(data = tibble(X = crds[,1],
+                                 Y = crds[,2],
+                                 p_log = apply(test[,-c(1:cutoff, (ncol(test)-cutoff+1):ncol(test))], 1, sum)), aes(x = X, y = Y, fill = p_log),
+                   shape = 21, color = "transparent", show.legend = FALSE, size = 2) +
+        scale_fill_viridis_c() +
+        if(path) geom_line(data = maxPts[apply(test, 2, which.max),], mapping = aes(x = X, y = Y)) +
+        if(path) geom_point(data = maxPts[apply(test, 2, which.max),], mapping = aes(x = X, y = Y, size = p), fill = "transparent") +
+        theme_light()
+      print(pl)
+    }
 
-  list(crds = pts, probTab = ll)
 
+    outList <- maxPts %>% filter(p>=quantile(p, probs = quantile)) %>% dplyr::select(X, Y) %>%
+      apply(2, function(x) list(lon = median(x), lower = quantile(x, probs = quantile[1]), upper = quantile(x, probs = quantile[2])))
+
+    tibble(lon = outList$X[[1]], lat = outList$Y[[1]],
+           lon_lower = outList$X[[2]], lon_upper = outList$X[[3]],
+           lat_lower = outList$Y[[2]], lat_upper = outList$Y[[3]])
 }
 
 
@@ -360,62 +368,167 @@ templateEstimate <- function(tagdata,
 
 
 
-templateSummary <- function(tempEst,
-                            mask,
-                            probs = c(0.05, 0.1),
-                            cutoff = 1) {
-
-
-  maskP   <- project(mask[[1]][,-3], proj = proj4string(mask$map))
-    maskR <- rasterize(maskP, mask$grid, field = mask[[1]][,3])
-
-  crdsLL <- project(tempEst$crds[,1:2], proj = proj4string(mask$map))
-
-    mLik   <- apply(tempEst$probTab[,,1], 1, function(x) sum(x))
-    ind    <- apply(tempEst$probTab[,,2], 1, function(x) sum(x)>cutoff)
-      tt     <- rasterize(crdsLL[!ind,], mask$grid, field = mLik[!ind])
-      tt[]   <- values(tt)/max(values(tt), na.rm = T)
-
-    ttU <- tt
-      ttU[!maskR[]] <- NA
-    ttM <- tt
-      ttM[!is.na(ttU)] <- NA
-
-
-
-  crd0 <- coordinates(tt)[which.max(ttU[]),]
-
-  crd1 <- coordinates(tt)[which(tt[]>=(1-probs[2])),]
-  crd2 <- coordinates(tt)[which(tt[]>=(1-probs[1])),]
-
-
-  invCrd <- project(matrix(c(crd0, apply(crd1,2,min), apply(crd1,2,max), apply(crd2,2,min), apply(crd2,2,max)), ncol = 2, byrow = T),
-                    proj =  proj4string(mask$map), inv = T)
-
-  out <- data.frame(t(as.vector(t(invCrd))[c(1,2,3,7,9,5,4,6,8,10)]))
-    names(out) <- c("Lon", "Lat", "Lon.lower1", "Lon.lower2", "Lon.upper2", "Lon.upper1", "Lat.lower1", "Lat.lower2", "Lat.upper2", "Lat.upper1")
-
-
-    opar <- par(mar = c(0,2,0,0), bty = "n")
-    brks <- seq(min(tt[], na.rm = T), max(tt[], na.rm = T), length = 100)
-
-    plot(ttU, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7)),
-         xaxt = "n", yaxt = "n")
-    plot(ttM, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7, s = 0.2)),
-         xaxt = "n", yaxt = "n", add = T)
-
-    plot(mask$map, add = T)
-    arrows(crd0[1], min(crd1[,2]), crd0[1], max(crd1[,2]), length = 0, lwd = 0.7)
-    arrows(crd0[1], min(crd2[,2]), crd0[1], max(crd2[,2]), length = 0, lwd = 3)
-
-    arrows(min(crd1[,1]), crd0[2], max(crd1[,1]), crd0[2], length = 0, lwd = 0.7)
-    arrows(min(crd2[,1]), crd0[2], max(crd2[,1]), crd0[2], length = 0, lwd = 3)
-
-    points(crd0[1],  crd0[2], pch = 21, cex = 3, lwd = 2, bg = "white")
-    par(opar)
-
-
-  out
-}
-
-
+#'
+#' #' This function uses the calibration table to evaluate the likelihood that the light has been recorded at any location of the grid.
+#' #'
+#' #' @title Calculation of spatial likelihood surface
+#' #'
+#' #' @param tagdata a dataframe with columns \code{Date} and
+#' #' \code{Light} that are the sequence of sample times (as POSIXct)
+#' #' and light levels recorded by the tag at known location.
+#' #' @param calibration calibration table created by \code{getTemplateCalib}.
+#' #' @param window number of days (24h) to put together for likelihood estimation (see details).
+#' #' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
+#' #' @param useMask logical, if \code{TRUE}, the mask is not only used to define the spatial extent but the pre-defined likelihoods (e.g. land vs. ocean) will be taken into account.
+#' #' @param cores parallel computing if >1.
+#' #' @param message logical, if TRUE messages reporting the progress will be printed in the console.
+#' #' @importFrom GeoLight solar refracted zenith
+#' #' @importFrom stats dlnorm
+#' #' @importFrom parallel makeCluster clusterSetRNGStream clusterExport clusterEvalQ parApply stopCluster
+#' #'
+#' #' @export
+#' templateEstimate <- function(tagdata,
+#'                              calibration,
+#'                              window = 1,
+#'                              adjust = 300,
+#'                              mask,
+#'                              useMask = FALSE,
+#'                              cores = detectCores()-1,
+#'                              message = TRUE) {
+#'
+#'   # Define segment by date
+#'   seg  <- floor((as.numeric(tagdata$Date)- as.numeric(min(tagdata$Date)))/(24*60*60))
+#'   nseg <- length(unique(seg))
+#'
+#'   ind <- cbind(c(1:nseg)[-c((nseg-(window-1)):nseg)], c(1:nseg)[-c(1:window)])
+#'
+#'   # Split into `slices`
+#'   slice <- apply(ind, 1, function(x) tagdata[seg%in%c(x[1]:x[2]),])
+#'
+#'   n   <- length(slice)
+#'   if(useMask) pts <- mask[[1]][mask[[1]][,3]==1,1:2] else pts <- mask[[1]]
+#'
+#'
+#'   logp <- function(c, w, adjust) {
+#'
+#'     date <- slice[[w]]$Date
+#'
+#'     ### first split into segments
+#'     ss  <- solar(date)
+#'     zX  <- refracted(zenith(ss, c[1L], c[2L]))
+#'     ct  <- c(zX[-length(zX)]>zX[-1])
+#'     ct  <- c(ct, ct[length(ct)])
+#'
+#'     ### second split with adjusted twilights
+#'     if(!is.null(adjust)) {
+#'       date[!ct] <- date[!ct]-adjust
+#'       ss        <- solar(date)
+#'       zX        <- refracted(zenith(ss, c[1L], c[2L]))
+#'     }
+#'
+#'     ExpL  <- calibration$MaxL(zX)
+#'     diffL <- (ExpL -  slice[[w]]$Light)+1e-5
+#'
+#'     # plot(slice[[w]]$Date, slice[[w]]$Light, type = "o", pch = 16, col = adjustcolor("grey", alpha.f = 0.5))
+#'     # points(slice[[w]]$Date, ExpL, type = "o", cex = 0.5)
+#'     # par(new = TRUE)
+#'     # plot(date, diffL, type = "l", xaxt = "n", xaxt = "n", lwd = 2, col = "orange")
+#'     # axis(4)
+#'
+#'     ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+#'     out1  <- unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE)))
+#'
+#'     cbind(sum(out1, na.rm = T), ifelse(all(zX<=calibration$cut), 100, sum(diffL<0)))
+#'   }
+#'
+#'
+#'   if(message) cat("making cluster\n")
+#'   mycl <- makeCluster(cores)
+#'   tmp  <- clusterSetRNGStream(mycl)
+#'   tmp  <- clusterExport(mycl,c("slice", "calibration", "logp"), envir=environment())
+#'   tmp  <- clusterEvalQ(mycl, library("GeoLight"))
+#'
+#'   ## Compute likelihood
+#'   ll <- array(dim = c(nrow(pts), n, 2))
+#'
+#'   for(i in 1:n) {
+#'
+#'     if(message) {
+#'       cat("\r", "window", i, " of ", n)
+#'       flush.console()
+#'     }
+#'
+#'     ll[,i,] <- t(parApply(mycl, pts, 1, FUN = logp, w = i, adjust = adjust))
+#'
+#'   }
+#'
+#'   end <- stopCluster(mycl)
+#'
+#'   list(crds = pts, probTab = ll)
+#'
+#' }
+#'
+#'
+#'
+#'
+#'
+#'
+#' templateSummary <- function(tempEst,
+#'                             mask,
+#'                             probs = c(0.05, 0.1),
+#'                             cutoff = 1) {
+#'
+#'
+#'   maskP   <- project(mask[[1]][,-3], proj = proj4string(mask$map))
+#'     maskR <- rasterize(maskP, mask$grid, field = mask[[1]][,3])
+#'
+#'   crdsLL <- project(tempEst$crds[,1:2], proj = proj4string(mask$map))
+#'
+#'     mLik   <- apply(tempEst$probTab[,,1], 1, function(x) sum(x))
+#'     ind    <- apply(tempEst$probTab[,,2], 1, function(x) sum(x)>cutoff)
+#'       tt     <- rasterize(crdsLL[!ind,], mask$grid, field = mLik[!ind])
+#'       tt[]   <- values(tt)/max(values(tt), na.rm = T)
+#'
+#'     ttU <- tt
+#'       ttU[!maskR[]] <- NA
+#'     ttM <- tt
+#'       ttM[!is.na(ttU)] <- NA
+#'
+#'
+#'
+#'   crd0 <- coordinates(tt)[which.max(ttU[]),]
+#'
+#'   crd1 <- coordinates(tt)[which(tt[]>=(1-probs[2])),]
+#'   crd2 <- coordinates(tt)[which(tt[]>=(1-probs[1])),]
+#'
+#'
+#'   invCrd <- project(matrix(c(crd0, apply(crd1,2,min), apply(crd1,2,max), apply(crd2,2,min), apply(crd2,2,max)), ncol = 2, byrow = T),
+#'                     proj =  proj4string(mask$map), inv = T)
+#'
+#'   out <- data.frame(t(as.vector(t(invCrd))[c(1,2,3,7,9,5,4,6,8,10)]))
+#'     names(out) <- c("Lon", "Lat", "Lon.lower1", "Lon.lower2", "Lon.upper2", "Lon.upper1", "Lat.lower1", "Lat.lower2", "Lat.upper2", "Lat.upper1")
+#'
+#'
+#'     opar <- par(mar = c(0,2,0,0), bty = "n")
+#'     brks <- seq(min(tt[], na.rm = T), max(tt[], na.rm = T), length = 100)
+#'
+#'     plot(ttU, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7)),
+#'          xaxt = "n", yaxt = "n")
+#'     plot(ttM, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7, s = 0.2)),
+#'          xaxt = "n", yaxt = "n", add = T)
+#'
+#'     plot(mask$map, add = T)
+#'     arrows(crd0[1], min(crd1[,2]), crd0[1], max(crd1[,2]), length = 0, lwd = 0.7)
+#'     arrows(crd0[1], min(crd2[,2]), crd0[1], max(crd2[,2]), length = 0, lwd = 3)
+#'
+#'     arrows(min(crd1[,1]), crd0[2], max(crd1[,1]), crd0[2], length = 0, lwd = 0.7)
+#'     arrows(min(crd2[,1]), crd0[2], max(crd2[,1]), crd0[2], length = 0, lwd = 3)
+#'
+#'     points(crd0[1],  crd0[2], pch = 21, cex = 3, lwd = 2, bg = "white")
+#'     par(opar)
+#'
+#'
+#'   out
+#' }
+#'
+#'
