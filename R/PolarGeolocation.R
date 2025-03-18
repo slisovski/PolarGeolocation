@@ -308,7 +308,7 @@ initRegion <- function(tagdata,
 #' @importFrom sf st_union st_transform st_intersection st_centroid st_as_sfc st_bbox
 #' @importFrom dplyr mutate
 #' @export
-makeMask <- function(init, quantile = 0.9, plot = TRUE) {
+makeMask <- function(init, quantile = 0.9, buffer = 1000, plot = TRUE) {
 
   quants <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>%
     filter(p >= quantile(p, probs = quantile)) %>% st_union() %>% st_centroid()
@@ -427,15 +427,10 @@ summaryLocation <- function(fit, quantiles = c(0.5), plot = T) {
 
   sfFit <- fit$fit %>% st_as_sf()
 
-  if(fit$log) {
-  range <- sfFit %>% filter(p >= quantile(p, probs = 1-quantiles[1])) %>% st_transform(4326) %>% st_bbox()
-  loc   <- sfFit %>% filter(p == min(p)) %>% st_transform(4326) %>%
-    st_union() %>% st_centroid() %>% st_coordinates() %>% suppressMessages() %>% suppressWarnings()
-  } else {
-    range <- sfFit %>% filter(p >= quantile(p, probs = quantiles[1])) %>% st_transform(4326) %>% st_bbox()
+  range <- sfFit %>% filter(p >= quantile(p, probs = quantiles[1])) %>% st_transform(4326) %>% st_bbox()
     loc   <- sfFit %>% filter(p == max(p)) %>% st_transform(4326) %>%
       st_union() %>% st_centroid() %>% st_coordinates() %>% suppressMessages() %>% suppressWarnings()
-  }
+
   out <- tibble(Lon = loc[1,1], Lat = loc[1,2], Lon_min = range[1], Lon_max = range[2], Lat_min = range[3], Lat_max = range[4])
 
   if(plot) {
