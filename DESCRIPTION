@@ -1,7 +1,7 @@
 Package: PolarGeolocation
 Type: Package
 Title: R Package: Light-level geolocation analysis tool for data recorded in high latitudes
-Version: 0.1.0
+Version: 0.2.0
 Author: Simeon Lisovski
 Maintainer: Simeon Lisovski <Simeon.lisovski@gmail.com>
 Description: Package specifically created to estimate breeding sites in high 
