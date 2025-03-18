@@ -30,7 +30,6 @@
 #' @importFrom MASS fitdistr
 #' @importFrom zoo na.approx
 #' @importFrom graphics par plot lines mtext polygon abline
-#' @importFrom GeoLight solar zenith refracted
 #' @export
 getTemplateCalib <- function(tagdata,
                              twl,
@@ -166,369 +165,176 @@ getTemplateCalib <- function(tagdata,
 }
 
 
-#' Initialise mask
-#'
-#'
-initMask <- function(tagdata,
-                     calibration,
-                     res = 50,
-                     adjust = 300,
-                     quantile = 0.85,
-                     hemisphere = "north",
-                     mask = "land",
-                     plot = FALSE) {
 
-  require(sf)
-  sf_use_s2(FALSE)
-  require(stars)
-  require(dplyr)
-  require(ggplot2)
-
-  if(is.null(map)) {
-    if(hemisphere=="north") {
-        proj_start <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, 90)
-    } else {
-        proj_start <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, -90)
-    }
-    bbox <- st_point(c(0,0)) %>% st_sfc() %>% st_set_crs(proj_start) %>% st_buffer(30e5)
-
-    map <- rnaturalearth::ne_countries(scale = 50) %>%
-      st_geometry() %>% st_union() %>%
-      st_transform(proj_start) %>% st_intersection(bbox) %>% suppressMessages()
-  }
-
-  mapRast <- st_rasterize(map %>% st_as_sf(), st_as_stars(st_bbox(map), dx = res*1000, dy = res*1000, values = NA_real_))
-
-  if(mask!="land") {
-    mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
-  }
-
-  crds    <- st_as_sf(mapRast, na.rm = FALSE) %>% st_centroid() %>% st_transform(4326) %>%
-    st_coordinates() %>% suppressMessages() %>% suppressWarnings()
-
-  mapRast <- mapRast %>% mutate(lon = crds[,1], lat = crds[,2]) %>% merge(names = 'layers')
-
-  testOut <- st_apply(mapRast, 1:2, function(x) {
-
-    if(!is.na(x[1])) {
-
-    date <- tagdata$Date
-    ss   <- solar(date)
-    zX   <- refracted(zenith(ss, x[2], x[3]))
-    ct   <- c(zX[-length(zX)]>zX[-1])
-    ct   <- c(ct, ct[length(ct)])
-
-    if(!is.null(adjust)) {
-      date[!ct] <- date[!ct]-adjust
-      ss        <- solar(date)
-      zX        <- refracted(zenith(ss, x[2], x[3]))
-    }
-
-    ExpL  <- calibration$MaxL(zX)
-    diffL <- (ExpL -  tagdata$Light)+1e-5
-
-    ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-    sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
-
-    } else NA
-
-  }, FUTURE = TRUE)
-
-  cont <-  testOut %>% setNames("probs") %>% mutate(probs = probs >= quantile(probs, probs = quantile, na.rm = T)) %>%
-    st_as_sf() %>% filter(probs) %>% st_union()
-
-  if(plot) {
-  pl <- ggplot() +
-    geom_stars(data = testOut, show.legend = F) +
-    scale_fill_binned(type = "viridis", na.value = "transparent") +
-    geom_sf(data = map, fill = NA, linewidth = 0.5) +
-    geom_sf(data = cont, fill = NA, color = "red", linewidth = 0.85) +
-    theme_void()
-  print(pl)
-  }
-
-  cont
-
-}
+## Functions copied from SGAT and temporariliy included into PolarGeolocation:
+## 1) solar
+## 2) zenith
+## 3) refracted
+## 4) twilight
+## 5) geolight.convert
 
 
-#' Location Estimation
-#'
-templateEstimate <- function(tagdata,
-                             calibration,
-                             bbox = bbox,
-                             res = 15,
-                             window = 24,
-                             adjust = 300,
-                             quantile = c(0.4, 0.6),
-                             mask = "land",
-                             cutoff = 3,
-                             parallel = TRUE,
-                             ncores = 4,
-                             path = FALSE,
-                             plot = TRUE) {
 
-    require(sf)
-    sf_use_s2(FALSE)
-    require(stars)
-    require(dplyr)
-    require(ggplot2)
+##' Calculate solar time, the equation of time and solar declination
+##'
+##' The solar time, the equation of time and the sine and cosine of
+##' the solar declination are calculted for the times specified by
+##' \code{tm} using the same methods as
+##' \url{https://gml.noaa.gov/grad/solcalc/}.
+##' @title Solar Time and Declination
+##' @param tm a vector of POSIXct times.
+##' @return A list containing the following vectors.
+##' \item{\code{solarTime}}{the solar time (degrees)}
+##' \item{\code{eqnTime}}{the equation of time (minutes of time)}
+##' \item{\code{sinSolarDec}}{sine of the solar declination}
+##' \item{\code{cosSolarDec}}{cosine of the solar declination}
+##' @seealso \code{\link{zenith}}
+##' @examples
+##' ## Current solar time
+##' solar(Sys.time())
+##' @export
+solar <- function(tm) {
 
-    bbox_out <- bbox %>% st_bbox %>% st_as_sfc(st_set_crs(bbox))
-    proj     <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea",
-                        (bbox_out %>% st_centroid() %>% st_transform(4326) %>% st_coordinates())[,1],
-                        (bbox_out %>% st_centroid() %>% st_transform(4326) %>% st_coordinates())[,2])
+  rad <- pi/180
 
-    map <- rnaturalearth::ne_countries(scale = 50) %>%
-        st_geometry() %>% st_union() %>%
-        st_transform(proj) %>% st_intersection(bbox_out %>% st_transform(proj)) %>% suppressMessages()
+  ## Time as Julian day (R form)
+  Jd <- as.numeric(tm)/86400.0+2440587.5
 
-    mapRast <- st_rasterize(map %>% st_as_sf(), st_as_stars(st_bbox(map), dx = res*1000, dy = res*1000, values = NA_real_))
+  ## Time as Julian century [G]
+  Jc <- (Jd-2451545)/36525
 
-    if(mask!="land") {
-      mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
-    }
-
-    crds <- mapRast %>% st_as_sf() %>% st_centroid() %>% st_transform(4326) %>% st_coordinates() %>% suppressWarnings()
-
-    dat  <- tagdata %>% as_tibble()
-    ss   <- solar(dat$Date)
-    zX   <- refracted(zenith(ss,
-                (bbox_out %>% st_transform(proj) %>% st_centroid() %>% st_centroid() %>% st_coordinates())[,1],
-                (bbox_out %>% st_transform(proj) %>% st_centroid() %>% st_centroid() %>% st_coordinates())[,2]))
-    dat  <- dat %>% mutate(ct = c(c(zX[-length(zX)]>zX[-1]), TRUE),
-                           Date = as.POSIXct(ifelse(!ct, Date - adjust, Date), origin = "1970-01-01")) %>%
-            group_split(Window = cut(as.numeric((Date - Date[1])/60/60), window*c(0:100), labels = FALSE, include.lowest = T))
+  ## The geometric mean sun longitude (degrees) [I]
+  L0 <- (280.46646+Jc*(36000.76983+0.0003032*Jc))%%360
 
 
-    if(parallel) {
+  ## Geometric mean anomaly for the sun (degrees) [J]
+  M <- 357.52911+Jc*(35999.05029-0.0001537*Jc)
 
-        require(parallel)
-        cl <- makeCluster(getOption("cl.cores", ncores))
-        clusterExport(cl, c('crds', "calibration"))
-        clusterEvalQ(cl, {
-          library(SGAT)
+  ## The eccentricity of earth's orbit [K]
+  e <- 0.016708634-Jc*(0.000042037+0.0000001267*Jc)
 
-        })
+  ## Equation of centre for the sun (degrees) [L]
+  eqctr <- sin(rad*M)*(1.914602-Jc*(0.004817+0.000014*Jc))+
+    sin(rad*2*M)*(0.019993-0.000101*Jc)+
+    sin(rad*3*M)*0.000289
 
-        test <- parLapply(cl, dat, function(x) {
-            p_log <- apply(crds, 1, function(p) {
-                          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
-                          ExpL  <- calibration$MaxL(zX)
-                          diffL <- (ExpL -  x$Light)+1e-5
+  ## The true longitude of the sun (degrees) [M]
+  lambda0 <- L0 + eqctr
 
-                          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-                          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
-                        })
-            p_log
-        }) %>% Reduce("cbind", .)
-    } else {
-      test <- lapply(dat, function(x) {
-        p_log <- apply(crds, 1, function(p) {
-          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
-          ExpL  <- calibration$MaxL(zX)
-          diffL <- (ExpL -  x$Light)+1e-5
-
-          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE))))
-        })
-        p_log
-      }) %>% Reduce("cbind", .)
-    }
-
-    if(parallel) stopCluster(cl)
-
-    maxPts <- as_tibble(cbind(crds, p = apply(test[,-c(1:cutoff, (ncol(test)-cutoff+1):ncol(test))], 1, max))) %>%
-      setNames(c("X", "Y", "p"))
-
-    if(plot) {
-      pl <- ggplot() +
-        geom_point(data = tibble(X = crds[,1],
-                                 Y = crds[,2],
-                                 p_log = apply(test[,-c(1:cutoff, (ncol(test)-cutoff+1):ncol(test))], 1, sum)), aes(x = X, y = Y, fill = p_log),
-                   shape = 21, color = "transparent", show.legend = FALSE, size = 2) +
-        scale_fill_viridis_c() +
-        if(path) geom_line(data = maxPts[apply(test, 2, which.max),], mapping = aes(x = X, y = Y)) +
-        if(path) geom_point(data = maxPts[apply(test, 2, which.max),], mapping = aes(x = X, y = Y, size = p), fill = "transparent") +
-        theme_light()
-      print(pl)
-    }
+  ## The apparent longitude of the sun (degrees) [P]
+  omega <- 125.04-1934.136*Jc
+  lambda <- lambda0-0.00569-0.00478*sin(rad*omega)
 
 
-    outList <- maxPts %>% filter(p>=quantile(p, probs = quantile)) %>% dplyr::select(X, Y) %>%
-      apply(2, function(x) list(lon = median(x), lower = quantile(x, probs = quantile[1]), upper = quantile(x, probs = quantile[2])))
+  ## The mean obliquity of the ecliptic (degrees) [Q]
+  seconds <- 21.448-Jc*(46.815+Jc*(0.00059-Jc*(0.001813)))
+  obliq0 <- 23+(26+(seconds/60))/60
 
-    tibble(lon = outList$X[[1]], lat = outList$Y[[1]],
-           lon_lower = outList$X[[2]], lon_upper = outList$X[[3]],
-           lat_lower = outList$Y[[2]], lat_upper = outList$Y[[3]])
+  ## The corrected obliquity of the ecliptic (degrees) [R]
+  omega <- 125.04-1934.136*Jc
+  obliq <- obliq0 + 0.00256*cos(rad*omega)
+
+  ## The equation of time (minutes of time) [U,V]
+  y <- tan(rad*obliq/2)^2
+  eqnTime <- 4/rad*(y*sin(rad*2*L0) -
+                      2*e*sin(rad*M) +
+                      4*e*y*sin(rad*M)*cos(rad*2*L0) -
+                      0.5*y^2*sin(rad*4*L0) -
+                      1.25*e^2*sin(rad*2*M))
+
+  ## The sun's declination (radians) [T]
+  solarDec <- asin(sin(rad*obliq)*sin(rad*lambda))
+  sinSolarDec <- sin(solarDec)
+  cosSolarDec <- cos(solarDec)
+
+  ## Solar time unadjusted for longitude (degrees) [AB!!]
+  ## Am missing a mod 360 here, but is only used within cosine.
+  solarTime <- ((Jd-0.5)%%1*1440+eqnTime)/4
+  #solarTime <- ((Jd-2440587.5)*1440+eqnTime)/4
+
+  ## Return solar constants
+  list(solarTime=solarTime,
+       eqnTime=eqnTime,
+       sinSolarDec=sinSolarDec,
+       cosSolarDec=cosSolarDec)
 }
 
 
 
+##' Calculate the solar zenith angle for given times and locations
+##'
+##' \code{zenith} uses the solar time and declination calculated by
+##' \code{solar} to compute the solar zenith angle for given times and
+##' locations, using the same methods as
+##' \url{https://gml.noaa.gov/grad/solcalc/}.  This function does not
+##' adjust for atmospheric refraction see \code{\link{refracted}}.
+##' @title Solar Zenith Angle
+##' @param sun list of solar time and declination computed by \code{solar}.
+##' @param lon vector of longitudes.
+##' @param lat vector latitudes.
+##' @return A vector of solar zenith angles (degrees) for the given
+##' locations and times.
+##' @seealso \code{\link{solar}}
+##' @examples
+##' ## Approx location of Sydney Harbour Bridge
+##' lon <- 151.211
+##' lat <- -33.852
+##' ## Solar zenith angle for noon on the first of May 2000
+##' ## at the Sydney Harbour Bridge
+##' s <- solar(as.POSIXct("2000-05-01 12:00:00","EST"))
+##' zenith(s,lon,lat)
+##' @export
+zenith <- function(sun,lon,lat) {
+
+  rad <- pi/180
+
+  ## Suns hour angle (degrees) [AC!!]
+  hourAngle <- sun$solarTime+lon-180
+  #hourAngle <- sun$solarTime%%360+lon-180
+
+  ## Cosine of sun's zenith [AD]
+  cosZenith <- (sin(rad*lat)*sun$sinSolarDec+
+                  cos(rad*lat)*sun$cosSolarDec*cos(rad*hourAngle))
+
+  ## Limit to [-1,1] [!!]
+  cosZenith[cosZenith > 1] <- 1
+  cosZenith[cosZenith < -1] <- -1
+
+  ## Ignore refraction correction
+  acos(cosZenith)/rad
+}
 
 
-
-#'
-#' #' This function uses the calibration table to evaluate the likelihood that the light has been recorded at any location of the grid.
-#' #'
-#' #' @title Calculation of spatial likelihood surface
-#' #'
-#' #' @param tagdata a dataframe with columns \code{Date} and
-#' #' \code{Light} that are the sequence of sample times (as POSIXct)
-#' #' and light levels recorded by the tag at known location.
-#' #' @param calibration calibration table created by \code{getTemplateCalib}.
-#' #' @param window number of days (24h) to put together for likelihood estimation (see details).
-#' #' @param mask set mask for areas animals are assumed to be restricted to, "sea", "land", or "none"
-#' #' @param useMask logical, if \code{TRUE}, the mask is not only used to define the spatial extent but the pre-defined likelihoods (e.g. land vs. ocean) will be taken into account.
-#' #' @param cores parallel computing if >1.
-#' #' @param message logical, if TRUE messages reporting the progress will be printed in the console.
-#' #' @importFrom GeoLight solar refracted zenith
-#' #' @importFrom stats dlnorm
-#' #' @importFrom parallel makeCluster clusterSetRNGStream clusterExport clusterEvalQ parApply stopCluster
-#' #'
-#' #' @export
-#' templateEstimate <- function(tagdata,
-#'                              calibration,
-#'                              window = 1,
-#'                              adjust = 300,
-#'                              mask,
-#'                              useMask = FALSE,
-#'                              cores = detectCores()-1,
-#'                              message = TRUE) {
-#'
-#'   # Define segment by date
-#'   seg  <- floor((as.numeric(tagdata$Date)- as.numeric(min(tagdata$Date)))/(24*60*60))
-#'   nseg <- length(unique(seg))
-#'
-#'   ind <- cbind(c(1:nseg)[-c((nseg-(window-1)):nseg)], c(1:nseg)[-c(1:window)])
-#'
-#'   # Split into `slices`
-#'   slice <- apply(ind, 1, function(x) tagdata[seg%in%c(x[1]:x[2]),])
-#'
-#'   n   <- length(slice)
-#'   if(useMask) pts <- mask[[1]][mask[[1]][,3]==1,1:2] else pts <- mask[[1]]
-#'
-#'
-#'   logp <- function(c, w, adjust) {
-#'
-#'     date <- slice[[w]]$Date
-#'
-#'     ### first split into segments
-#'     ss  <- solar(date)
-#'     zX  <- refracted(zenith(ss, c[1L], c[2L]))
-#'     ct  <- c(zX[-length(zX)]>zX[-1])
-#'     ct  <- c(ct, ct[length(ct)])
-#'
-#'     ### second split with adjusted twilights
-#'     if(!is.null(adjust)) {
-#'       date[!ct] <- date[!ct]-adjust
-#'       ss        <- solar(date)
-#'       zX        <- refracted(zenith(ss, c[1L], c[2L]))
-#'     }
-#'
-#'     ExpL  <- calibration$MaxL(zX)
-#'     diffL <- (ExpL -  slice[[w]]$Light)+1e-5
-#'
-#'     # plot(slice[[w]]$Date, slice[[w]]$Light, type = "o", pch = 16, col = adjustcolor("grey", alpha.f = 0.5))
-#'     # points(slice[[w]]$Date, ExpL, type = "o", cex = 0.5)
-#'     # par(new = TRUE)
-#'     # plot(date, diffL, type = "l", xaxt = "n", xaxt = "n", lwd = 2, col = "orange")
-#'     # axis(4)
-#'
-#'     ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-#'     out1  <- unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = FALSE)))
-#'
-#'     cbind(sum(out1, na.rm = T), ifelse(all(zX<=calibration$cut), 100, sum(diffL<0)))
-#'   }
-#'
-#'
-#'   if(message) cat("making cluster\n")
-#'   mycl <- makeCluster(cores)
-#'   tmp  <- clusterSetRNGStream(mycl)
-#'   tmp  <- clusterExport(mycl,c("slice", "calibration", "logp"), envir=environment())
-#'   tmp  <- clusterEvalQ(mycl, library("GeoLight"))
-#'
-#'   ## Compute likelihood
-#'   ll <- array(dim = c(nrow(pts), n, 2))
-#'
-#'   for(i in 1:n) {
-#'
-#'     if(message) {
-#'       cat("\r", "window", i, " of ", n)
-#'       flush.console()
-#'     }
-#'
-#'     ll[,i,] <- t(parApply(mycl, pts, 1, FUN = logp, w = i, adjust = adjust))
-#'
-#'   }
-#'
-#'   end <- stopCluster(mycl)
-#'
-#'   list(crds = pts, probTab = ll)
-#'
-#' }
-#'
-#'
-#'
-#'
-#'
-#'
-#' templateSummary <- function(tempEst,
-#'                             mask,
-#'                             probs = c(0.05, 0.1),
-#'                             cutoff = 1) {
-#'
-#'
-#'   maskP   <- project(mask[[1]][,-3], proj = proj4string(mask$map))
-#'     maskR <- rasterize(maskP, mask$grid, field = mask[[1]][,3])
-#'
-#'   crdsLL <- project(tempEst$crds[,1:2], proj = proj4string(mask$map))
-#'
-#'     mLik   <- apply(tempEst$probTab[,,1], 1, function(x) sum(x))
-#'     ind    <- apply(tempEst$probTab[,,2], 1, function(x) sum(x)>cutoff)
-#'       tt     <- rasterize(crdsLL[!ind,], mask$grid, field = mLik[!ind])
-#'       tt[]   <- values(tt)/max(values(tt), na.rm = T)
-#'
-#'     ttU <- tt
-#'       ttU[!maskR[]] <- NA
-#'     ttM <- tt
-#'       ttM[!is.na(ttU)] <- NA
-#'
-#'
-#'
-#'   crd0 <- coordinates(tt)[which.max(ttU[]),]
-#'
-#'   crd1 <- coordinates(tt)[which(tt[]>=(1-probs[2])),]
-#'   crd2 <- coordinates(tt)[which(tt[]>=(1-probs[1])),]
-#'
-#'
-#'   invCrd <- project(matrix(c(crd0, apply(crd1,2,min), apply(crd1,2,max), apply(crd2,2,min), apply(crd2,2,max)), ncol = 2, byrow = T),
-#'                     proj =  proj4string(mask$map), inv = T)
-#'
-#'   out <- data.frame(t(as.vector(t(invCrd))[c(1,2,3,7,9,5,4,6,8,10)]))
-#'     names(out) <- c("Lon", "Lat", "Lon.lower1", "Lon.lower2", "Lon.upper2", "Lon.upper1", "Lat.lower1", "Lat.lower2", "Lat.upper2", "Lat.upper1")
-#'
-#'
-#'     opar <- par(mar = c(0,2,0,0), bty = "n")
-#'     brks <- seq(min(tt[], na.rm = T), max(tt[], na.rm = T), length = 100)
-#'
-#'     plot(ttU, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7)),
-#'          xaxt = "n", yaxt = "n")
-#'     plot(ttM, legend = FALSE, breaks = brks, col = rev(rainbow(100, start = 0, end = 0.7, s = 0.2)),
-#'          xaxt = "n", yaxt = "n", add = T)
-#'
-#'     plot(mask$map, add = T)
-#'     arrows(crd0[1], min(crd1[,2]), crd0[1], max(crd1[,2]), length = 0, lwd = 0.7)
-#'     arrows(crd0[1], min(crd2[,2]), crd0[1], max(crd2[,2]), length = 0, lwd = 3)
-#'
-#'     arrows(min(crd1[,1]), crd0[2], max(crd1[,1]), crd0[2], length = 0, lwd = 0.7)
-#'     arrows(min(crd2[,1]), crd0[2], max(crd2[,1]), crd0[2], length = 0, lwd = 3)
-#'
-#'     points(crd0[1],  crd0[2], pch = 21, cex = 3, lwd = 2, bg = "white")
-#'     par(opar)
-#'
-#'
-#'   out
-#' }
-#'
-#'
+##' Adjust the solar zenith angle for atmospheric refraction.
+##'
+##' Given a vector of solar zeniths computed by \code{\link{zenith}},
+##' \code{refracted} calculates the solar zeniths adjusted for the
+##' effect of atmospheric refraction.
+##'
+##' \code{unrefracted} is the inverse of \code{refracted}. Given a
+##' (single) solar zenith adjusted for the effect of atmospheric
+##' refraction, \code{unrefracted} calculates the solar zenith as
+##' computed by \code{\link{zenith}}.
+##'
+##' @title Atmospheric Refraction
+##' @param zenith zenith angle (degrees) to adjust.
+##' @return vector of zenith angles (degrees) adjusted for atmospheric
+##' refraction.
+##' @examples
+##' ## Refraction causes the sun to appears higher on the horizon
+##' refracted(85:92)
+##' ## unrefracted gives unadjusted zenith (see SGAT)
+##'
+##' @export
+refracted <- function(zenith) {
+  rad <- pi/180
+  elev <- 90-zenith
+  te <- tan((rad)*elev)
+  ## Atmospheric Refraction [AF]
+  r <- ifelse(elev>85,0,
+              ifelse(elev>5,58.1/te-0.07/te^3+0.000086/te^5,
+                     ifelse(elev>-0.575,
+                            1735+elev*(-518.2+elev*(103.4+elev*(-12.79+elev*0.711))),-20.772/te)))
+  ## Corrected Zenith [90-AG]
+  zenith-r/3600
+}
