@@ -10,7 +10,9 @@ Description: Package specifically created to estimate breeding sites in high
   geolocator data in general. Locations are estimated using a template-fit approach.
 Depends: sf,
          stars,
+         rnaturalearth,
          dplyr,
+         scales,
          ggplot2,
          zoo,
          MASS,

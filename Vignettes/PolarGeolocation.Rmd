@@ -90,7 +90,7 @@ calib <- getTemplateCalib(tagdata = GRKN_calib,
                           twl = GRKN_twlCalib,
                           lon = 122.27,
                           lat = -17.96,
-                          bin = 2.5,
+                          bin = 3.5,
                           adjust = 300,
                           plot = TRUE)
 ```
@@ -111,54 +111,25 @@ head(calib$calibTab)
 
 ## 2. Spatial mask
 
-There are two main reasons to define a spatial mask. The most important one is to define the boundary box and resolution for the location estimates (xlim, ylim); both parameters define the processing speed of the estimation. The second reason is to exclude areas such as the ocean, in case the tracked animal must have been on land etc. Excluding areas can also significantly speed up the location estimation.
-
-The function `makeMask` allows automatic compiling of a mask with the following parameters:
-
-* `centre` - centre (lon, lat) of the mask. 
-* `radius` - radius around centre (in km).
-* `res`- resolutin, e.g. cell size in km.
-* `mask` - set mask for areas animals are assumed to be restricted to, "sea", "land", or "none".
-* `pacific` - optional Pacific-centered map, defaults to Atlantic-centered map.
-
- 
-```{r, fig.width=5.5, fig.height=5}
-xlim <- c(110, 180)
-ylim <- c(55, 80)
-
-    xcentre <- round(xlim[1] + diff(xlim)/2)
-    ycentre <- round(ylim[1] + diff(ylim)/2)
-
-mask <- makeMask(c(xcentre, ycentre), 2500, res = 100, mask = "land", plot = TRUE)
+```{r}
+bboxRast <- initRegion(tagdata = GRKN_breed, calibration = calib, plot = TRUE)
+bbox     <- makeMask(init = bboxRast, quantile = 0.75, plot = TRUE)
 ```
- 
- 
+
 ## 3. Maximum likelihood estimates
 
-The principle behind `templateEstimate` has been described in detail in [Lisovski 2018](#lisovski_2018). In a nutshell, the function uses the following parameters:
-
-* `tagdata` -  a dataframe with columns Date and Light that are the sequence of sample times (as POSIXct) and light levels recorded by the tag (e.g. `GRKN_breed`).                            
-* `calibration` - a dataframe with the same structure as provided by the function `getTemplateCalib`. 
-* `window` - the number of days (24 hours) to bin in slices and estimate the location probabilities, e.g. 4 means that 4 subsequent days will be used to estimate one layer of log-likelihoods. This window is similar to a running window and days will be used multiple times centered around every day along the time series of 'tagdata'.
-* `adjust` - adjust twilights for tags that report the maximum light interval observed in the preceeding sampling interval.
-* `mask` - the spatial maks (raster) produced by `makeMask`.
-* `cores`- the number of cores available for this calculation (default is all cores -1).
-
-The function first splits the recordings into slices for each day and the surrounding days according to the parameter `window`. Next, the log-likelihood of each slice and for each grid-cell (of the mask) is estimated using the calibration parameters. Depending on the extent and resolution as well as the number of slices, this process may take several minutes.
-
-Here, we estimate the locations for the calibration location as well as the location for the breeding site.
-
-
-```{r, message=FALSE, warning=FALSE}
-ll <- templateEstimate(GRKN_breed, calib, adjust = 300, mask = mask, message = FALSE)
+```{r}
+tFit <- templateEstimate(tagdata = GRKN_breed, calibration = calib,
+                             bbox = bbox, resolution = 25,
+                             adjust = 300,
+                             window = 24,
+                             exclude = FALSE,
+                             ncores = detectCores(),
+                             plot = TRUE)
 ```
 
-## 4. Summary/Plotting
 
 
-```{r, fig.height=10, fig.width=10}
-sm <- templateSummary(ll, mask, probs = c(0.05, 0.1), cutoff = 5)
-```
 
 
 

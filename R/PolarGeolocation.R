@@ -166,6 +166,291 @@ getTemplateCalib <- function(tagdata,
 
 
 
+#' Initialise the region
+#
+#' @title Initialisation
+#'
+#' @param tagdata a dataframe with columns \code{Date} and
+#' \code{Light} that are the sequence of sample times (as POSIXct)
+#' and light levels recorded by the tag at known location.
+#' @param calibration ...
+#' @param adjust  timing adjustment for sunset intervals.
+#' @param plot logical, if \code{TRUE} a plot will be shown.
+#' @return ...
+#' @importFrom rnaturalearth ne_countries
+#' @importFrom sf st_geometry st_union st_transform st_intersection st_centroid st_as_sf st_bbox
+#' @importFrom parallel makeCluster clusterEvalQ stopCluster
+#' @importFrom tibble tibble
+#' @importFrom dplyr mutate
+#' @importFrom stars st_as_stars st_rasterize
+#' @importFrom scales rescale
+#' @export
+initRegion <- function(tagdata,
+                       calibration,
+                       resolution = 50,
+                       adjust = 300,
+                       arctic = TRUE,
+                       buffer = 3000,
+                       mask = "land",
+                       exclude = TRUE,
+                       ncores = detectCores(),
+                       plot = FALSE) {
+
+
+  sf_use_s2(FALSE)
+
+  if(arctic) {
+     proj <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, 90)
+  } else proj <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea", 0, -90)
+
+  bbox <- st_point(c(0,0)) %>% st_sfc() %>% st_set_crs(proj) %>% st_buffer(buffer*1000)
+
+  map <- ne_countries(scale = 50) %>%
+    st_geometry() %>% st_union() %>%
+    st_transform(proj) %>% st_intersection(bbox) %>% suppressMessages()
+
+  mapRast <- st_rasterize(map %>% st_as_sf(),
+                          st_as_stars(st_bbox(map), dx = resolution*1000, dy = resolution*1000, values = NA_real_))
+
+  if(mask!="land") {
+    mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
+  }
+
+  crds    <- st_as_sf(mapRast) %>% st_centroid() %>% st_transform(4326) %>%
+    st_coordinates() %>% suppressMessages() %>% suppressWarnings()
+
+  dat <- tagdata
+  clb <- calibration
+  adj <- adjust
+  crd <- crds
+
+  if(ncores>1) {
+
+    cl <- makeCluster(getOption("cl.cores", ncores))
+    clusterExport(cl, c('dat', 'clb', 'adj', 'crd', 'zenith', 'solar', 'refracted'), envir = environment())
+
+    parOut <- parLapply(cl, 1:nrow(crd), function(x) {
+
+      date <- dat$Date
+      ss   <- solar(date)
+      zX   <- refracted(zenith(ss, crd[x, 1], crd[x, 2]))
+      ct   <- c(zX[-length(zX)]>zX[-1])
+      ct   <- c(ct, ct[length(ct)])
+
+      if(!is.null(adj)) {
+        date[!ct] <- date[!ct]-adj
+        ss        <- solar(date)
+        zX        <- refracted(zenith(ss, crd[x, 1], crd[x, 2]))
+      }
+
+      ExpL  <- clb$MaxL(zX)
+      diffL <- (ExpL -  dat$Light)+1e-5
+
+      ind <- cut(zX, breaks = clb$calibTab[,1], labels = FALSE)
+      sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  clb$calibTab[x,2], clb$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
+
+    }) %>% Reduce("c", .)
+
+    parallel::stopCluster(cl)
+
+  } else {
+
+    parOut <- lapply(1:nrow(crds), function(x) {
+
+      date <- tagdata$Date
+      ss   <- solar(date)
+      zX   <- refracted(zenith(ss, crds[x, 1], crds[x, 2]))
+      ct   <- c(zX[-length(zX)]>zX[-1])
+      ct   <- c(ct, ct[length(ct)])
+
+      if(!is.null(adjust)) {
+        date[!ct] <- date[!ct]-adjust
+        ss        <- solar(date)
+        zX        <- refracted(zenith(ss, crds[x, 1], crds[x, 2]))
+      }
+
+      ExpL  <- calibration$MaxL(zX)
+      diffL <- (ExpL -  tagdata$Light)+1e-5
+
+      ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+      sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
+
+    }) %>% Reduce("c", .)
+
+  }
+
+  rastOut <- tibble(lon = crds[,1], lat = crds[,2], p = rescale(parOut, c(0,1))) %>%
+    st_as_sf(coords = c("lon", "lat"), crs = 4326) %>%
+    st_transform(proj) %>%
+    st_rasterize(st_as_stars(st_bbox(map), dx = resolution*1000, dy = resolution*1000, values = NA_real_))
+
+  if(plot) {
+    pl <- ggplot() +
+      geom_stars(data = rastOut, show.legend = F) +
+      scale_fill_binned(type = "viridis", na.value = "transparent") +
+      geom_sf(data = map, fill = NA, linewidth = 0.5) +
+      theme_void()
+    print(pl)
+  }
+
+  list(rastOut, map)
+
+}
+
+#' Extract bounding box from initialisation
+#
+#' @title Bounding box
+#'
+#' @param init output from \code{initRegion}
+#' @param quantile values/region to include in bounding box
+#' @param plot logical, if \code{TRUE} a plot will be shown.
+#' @return ...
+#' @importFrom sf st_union st_transform st_intersection st_centroid st_as_sfc st_bbox
+#' @importFrom dplyr mutate
+#' @export
+makeMask <- function(init, quantile = 0.9, plot = TRUE) {
+
+  quants <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>%
+    filter(p >= quantile(p, probs = quantile)) %>% st_union() %>% st_centroid()
+
+  proj <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea",
+                  (quants %>% st_transform(4326) %>% st_coordinates())[,1],
+                  (quants %>% st_transform(4326) %>% st_coordinates())[,2])
+
+  box <- quants %>% st_transform(proj) %>% st_buffer(buffer*1000) %>% st_bbox() %>% st_as_sfc(crs = proj)
+  map <- init[[2]] %>% st_transform(proj) %>% st_intersection(box)
+  col <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>% st_transform(proj) %>% st_intersection(map) %>% suppressWarnings()
+
+  if(plot) {
+    pl <- ggplot() +
+      geom_sf(data = map, fill = "grey90", color = "grey10", show.legend = F) +
+      geom_sf(data = col, mapping = aes(fill = p), show.legend = F) +
+      scale_fill_binned(type = "viridis", na.value = "transparent") +
+      theme_void()
+    print(pl)
+  }
+
+  list(bbox = box, map = map)
+}
+
+#' Template fit
+#
+#' @title Template fit
+#'
+#' @export
+templateEstimate <- function(tagdata,
+                             calibration,
+                             bbox,
+                             resolution = 15,
+                             adjust = 300,
+                             window = 24,
+                             exclude = FALSE,
+                             ncores = detectCores(),
+                             plot = TRUE) {
+
+  sf_use_s2(FALSE)
+
+  mapRast <- st_rasterize(bbox$map %>% st_as_sf(), st_as_stars(st_bbox(bbox$map),
+                        dx = resolution*1000, dy = resolution*1000, values = NA_real_))
+
+  centr <- map %>% st_centroid() %>% st_transform(4326) %>% st_coordinates()
+  crds  <- mapRast %>% st_as_sf() %>% st_centroid() %>% st_transform(4326) %>% st_coordinates() %>% suppressWarnings() %>% suppressMessages()
+
+  ss   <- solar(tagdata$Date)
+  zX   <- refracted(zenith(ss, centr[1,1], centr[1,2]))
+
+  dat  <- tagdata %>% as_tibble() %>%
+            mutate(ct = c(c(zX[-length(zX)]>zX[-1]), TRUE),
+                   Date = as.POSIXct(ifelse(!ct, Date - adjust, Date), origin = "1970-01-01")) %>%
+            group_split(Window = cut(as.numeric((Date - Date[1])/60/60), window*c(0:nrow(.)), labels = FALSE, include.lowest = T))
+
+
+  if(ncores > 1) {
+
+    cl <- makeCluster(getOption("cl.cores", ncores))
+    clusterExport(cl, c('dat', 'calibration', 'crds', 'zenith', 'solar', 'refracted', 'exclude'), envir = environment())
+
+      pOut <- parLapply(cl, dat, function(x) {
+        p_log <- apply(crds, 1, function(p) {
+          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
+          ExpL  <- calibration$MaxL(zX)
+          diffL <- (ExpL -  x$Light+0.05)
+
+          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+                                                            log = exclude))))
+        })
+        p_log
+      }) %>% Reduce("cbind", .)
+
+      if(ncores>1) stopCluster(cl)
+
+    } else {
+      pOut <- lapply(dat, function(x) {
+        p_log <- apply(crds, 1, function(p) {
+          zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
+          ExpL  <- calibration$MaxL(zX)
+          diffL <- (ExpL -  x$Light+0.05)
+
+          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+                                                            log = exclude, TRUE, FALSE))))
+        })
+        p_log
+      }) %>% Reduce("cbind", .)
+    }
+
+    rastOut <-  mapRast %>% st_as_sf() %>% st_centroid() %>% mutate(p = apply(pOut, 1, max)) %>% dplyr::select(p) %>%
+      st_rasterize(st_as_stars(st_bbox(bbox$map), dx = (resolution+2)*1000, dy = (resolution+2)*1000, values = NA_real_)) %>%
+      suppressWarnings() %>% suppressMessages()
+
+    if(plot) {
+      pl <- ggplot() +
+        geom_sf(data = bbox$map, fill = "grey90", color = "grey10", show.legend = F) +
+        geom_stars(data = rastOut) +
+        scale_fill_viridis_c(na.value = "transparent")+
+        theme_light()
+      print(pl)
+    }
+
+   list(fit = rastOut, map = bbox$map, log = exclude)
+}
+
+
+
+#' Extract Location
+#
+#' @title Extract breeding site
+#'
+#' @export
+summaryLocation <- function(fit, quantiles = c(0.5), plot = T) {
+
+  sfFit <- fit$fit %>% st_as_sf()
+
+  if(fit$log) {
+  range <- sfFit %>% filter(p >= quantile(p, probs = 1-quantiles[1])) %>% st_transform(4326) %>% st_bbox()
+  loc   <- sfFit %>% filter(p == min(p)) %>% st_transform(4326) %>%
+    st_union() %>% st_centroid() %>% st_coordinates() %>% suppressMessages() %>% suppressWarnings()
+  } else {
+    range <- sfFit %>% filter(p >= quantile(p, probs = quantiles[1])) %>% st_transform(4326) %>% st_bbox()
+    loc   <- sfFit %>% filter(p == max(p)) %>% st_transform(4326) %>%
+      st_union() %>% st_centroid() %>% st_coordinates() %>% suppressMessages() %>% suppressWarnings()
+  }
+  out <- tibble(Lon = loc[1,1], Lat = loc[1,2], Lon_min = range[1], Lon_max = range[2], Lat_min = range[3], Lat_max = range[4])
+
+  if(plot) {
+    pl <- ggplot() +
+      geom_sf(data = fit$map, fill = "grey90", color = "grey10", show.legend = F) +
+      geom_stars(data = fit$fit) +
+      scale_fill_viridis_c(na.value = "transparent") +
+      geom_sf(data = out %>% st_as_sf(coords = c("Lon", "Lat"), crs = 4326)) +
+      theme_light()
+    print(pl)
+  }
+
+  out
+}
+
 ## Functions copied from SGAT and temporariliy included into PolarGeolocation:
 ## 1) solar
 ## 2) zenith
