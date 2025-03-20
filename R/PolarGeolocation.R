@@ -212,8 +212,12 @@ initRegion <- function(tagdata,
   mapRast <- st_rasterize(map %>% st_as_sf(),
                           st_as_stars(st_bbox(map), dx = resolution*1000, dy = resolution*1000, values = NA_real_))
 
-  if(mask!="land") {
+  if(mask=="ocean") {
     mapRast <- mapRast %>% mutate(ID = ifelse(is.na(ID), 1, NA))
+  }
+
+  if(mask=="none") {
+    mapRast <- mapRast %>% mutate(ID = 1) %>% st_crop(bbox)
   }
 
   crds    <- st_as_sf(mapRast) %>% st_centroid() %>% st_transform(4326) %>%
@@ -227,7 +231,7 @@ initRegion <- function(tagdata,
   if(ncores>1) {
 
     cl <- makeCluster(getOption("cl.cores", ncores))
-    clusterExport(cl, c('dat', 'clb', 'adj', 'crd', 'zenith', 'solar', 'refracted'), envir = environment())
+    clusterExport(cl, c('dat', 'clb', 'adj', 'crd', 'zenith', 'solar', 'refracted', 'exclude'), envir = environment())
 
     parOut <- parLapply(cl, 1:nrow(crd), function(x) {
 
@@ -293,7 +297,7 @@ initRegion <- function(tagdata,
     print(pl)
   }
 
-  list(rastOut, map)
+  list(rastOut, map, mask = mask)
 
 }
 
@@ -311,26 +315,27 @@ initRegion <- function(tagdata,
 makeMask <- function(init, quantile = 0.9, buffer = 1000, plot = TRUE) {
 
   quants <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>%
-    filter(p >= quantile(p, probs = quantile)) %>% st_union() %>% st_centroid()
+    filter(p >= quantile(p, probs = quantile)) %>% st_union() %>% st_buffer(buffer)
 
   proj <- sprintf("%s +lon_0=%f +lat_0=%f +ellps=sphere", "+proj=laea",
-                  (quants %>% st_transform(4326) %>% st_coordinates())[,1],
-                  (quants %>% st_transform(4326) %>% st_coordinates())[,2])
+                  (quants %>% st_transform(4326) %>% st_centroid() %>% st_coordinates())[,1],
+                  (quants %>% st_transform(4326) %>% st_centroid() %>% st_coordinates())[,2]) %>%
+    suppressWarnings()
 
-  box <- quants %>% st_transform(proj) %>% st_buffer(buffer*1000) %>% st_bbox() %>% st_as_sfc(crs = proj)
+  box <- quants %>% st_transform(proj) %>% st_bbox() %>% st_as_sfc(crs = proj)
   map <- init[[2]] %>% st_transform(proj) %>% st_intersection(box)
-  col <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>% st_transform(proj) %>% st_intersection(map) %>% suppressWarnings()
+  col <- init[[1]] %>% st_as_sf() %>% filter(!is.infinite(p)) %>% st_transform(proj) %>% st_intersection(box) %>% suppressWarnings()
 
   if(plot) {
     pl <- ggplot() +
-      geom_sf(data = map, fill = "grey90", color = "grey10", show.legend = F) +
       geom_sf(data = col, mapping = aes(fill = p), show.legend = F) +
       scale_fill_binned(type = "viridis", na.value = "transparent") +
+      geom_sf(data = map, fill = "transparent", color = "grey10", show.legend = F) +
       theme_void()
     print(pl)
   }
 
-  list(bbox = box, map = map)
+  list(bbox = box, map = map, mask = init$mask)
 }
 
 #' Template fit
@@ -354,7 +359,8 @@ templateEstimate <- function(tagdata,
                         dx = resolution*1000, dy = resolution*1000, values = NA_real_))
 
   centr <- map %>% st_centroid() %>% st_transform(4326) %>% st_coordinates()
-  crds  <- mapRast %>% st_as_sf() %>% st_centroid() %>% st_transform(4326) %>% st_coordinates() %>% suppressWarnings() %>% suppressMessages()
+  crds  <- mapRast %>% st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>% st_centroid() %>%
+    st_transform(4326) %>% st_coordinates() %>% suppressWarnings() %>% suppressMessages()
 
   ss   <- solar(tagdata$Date)
   zX   <- refracted(zenith(ss, centr[1,1], centr[1,2]))
@@ -400,15 +406,16 @@ templateEstimate <- function(tagdata,
       }) %>% Reduce("cbind", .)
     }
 
-    rastOut <-  mapRast %>% st_as_sf() %>% st_centroid() %>% mutate(p = apply(pOut, 1, max)) %>% dplyr::select(p) %>%
+    rastOut <-  mapRast %>% st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>%
+      st_centroid() %>% mutate(p = apply(pOut, 1, max)) %>% dplyr::select(p) %>%
       st_rasterize(st_as_stars(st_bbox(bbox$map), dx = (resolution+2)*1000, dy = (resolution+2)*1000, values = NA_real_)) %>%
       suppressWarnings() %>% suppressMessages()
 
     if(plot) {
       pl <- ggplot() +
-        geom_sf(data = bbox$map, fill = "grey90", color = "grey10", show.legend = F) +
         geom_stars(data = rastOut) +
         scale_fill_viridis_c(na.value = "transparent")+
+        geom_sf(data = bbox$map, fill = "transparent", color = "grey10", show.legend = F) +
         theme_light()
       print(pl)
     }

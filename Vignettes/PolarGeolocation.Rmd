@@ -25,6 +25,11 @@ install_github('slisovski/PolarGeolocation')
 Load package
 ```{r, warning=FALSE, message=FALSE}
 library(PolarGeolocation)
+
+library(MASS)
+library(zoo)
+library(sf); sf_use_s2(FALSE)
+library(stars)
 ```
 
 ## <a name="introduction"></a>General introduction
@@ -112,8 +117,8 @@ head(calib$calibTab)
 ## 2. Spatial mask
 
 ```{r}
-bboxRast <- initRegion(tagdata = GRKN_breed, calibration = calib, plot = TRUE)
-bbox     <- makeMask(init = bboxRast, quantile = 0.75, plot = TRUE)
+bboxRast <- initRegion(tagdata = GRKN_breed, calibration = calib, mask = "none", plot = TRUE)
+bbox     <- makeMask(init = bboxRast, quantile = 0.83, plot = TRUE)
 ```
 
 ## 3. Maximum likelihood estimates
