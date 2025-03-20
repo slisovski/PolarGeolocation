@@ -193,6 +193,7 @@ initRegion <- function(tagdata,
                        buffer = 3000,
                        mask = "land",
                        exclude = TRUE,
+                       polarBuffer = 500,
                        ncores = detectCores(),
                        plot = FALSE) {
 
@@ -220,7 +221,11 @@ initRegion <- function(tagdata,
     mapRast <- mapRast %>% mutate(ID = 1) %>% st_crop(bbox)
   }
 
-  crds    <- st_as_sf(mapRast) %>% st_centroid() %>% st_transform(4326) %>%
+  crds0    <- st_as_sf(mapRast) %>% st_centroid() %>%
+    mutate(dist = st_distance(., st_point(c(0,0)) %>% st_sfc(crs = proj))) %>% st_transform(4326) %>%
+    suppressMessages() %>% suppressWarnings()
+
+  crds     <- crds0[as.numeric(crds0$dist)>=(polarBuffer*1000),] %>%
     st_coordinates() %>% suppressMessages() %>% suppressWarnings()
 
   dat <- tagdata
@@ -248,12 +253,11 @@ initRegion <- function(tagdata,
       }
 
       ExpL  <- clb$MaxL(zX)
-      if(sd(ExpL)<=0.025) -NaN else {
-        diffL <- (ExpL -  tagdata$Light)+1e-5
+      diffL <- (ExpL -  tagdata$Light)+1e-5
 
-        ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-        sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
-      }
+      ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+      sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
+
     }) %>% Reduce("c", .)
 
     parallel::stopCluster(cl)
@@ -275,12 +279,10 @@ initRegion <- function(tagdata,
       }
 
       ExpL  <- calibration$MaxL(zX)
-      if(sd(ExpL)<=0.025) -NaN else {
       diffL <- (ExpL -  tagdata$Light)+1e-5
 
       ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
       sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
-      }
     }) %>% Reduce("c", .)
 
   }
@@ -299,7 +301,7 @@ initRegion <- function(tagdata,
     print(pl)
   }
 
-  list(rastOut, map, mask = mask)
+  list(rastOut, map, mask = mask, polarBuffer = polarBuffer)
 
 }
 
@@ -337,7 +339,7 @@ makeMask <- function(init, quantile = 0.9, buffer = 1000, plot = TRUE) {
     print(pl)
   }
 
-  list(bbox = box, map = map, mask = init$mask)
+  list(bbox = box, map = map, mask = init$mask, polarBuffer = init$polarBuffer)
 }
 
 #' Template fit
@@ -361,8 +363,13 @@ templateEstimate <- function(tagdata,
                         dx = resolution*1000, dy = resolution*1000, values = NA_real_))
 
   centr <- map %>% st_centroid() %>% st_transform(4326) %>% st_coordinates()
-  crds  <- mapRast %>% st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>% st_centroid() %>%
-    st_transform(4326) %>% st_coordinates() %>% suppressWarnings() %>% suppressMessages()
+
+  crds  <- mapRast %>%
+    st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>% st_centroid() %>%
+    mutate(dist = st_distance(., st_point(c(0,0)) %>% st_sfc(crs = st_crs(mapRast)))) %>%
+    filter(as.numeric(dist) >= as.numeric((bbox$polarBuffer*1000))) %>% st_transform(4326) %>%
+    st_coordinates() %>%
+    suppressMessages() %>% suppressWarnings()
 
   ss   <- solar(tagdata$Date)
   zX   <- refracted(zenith(ss, centr[1,1], centr[1,2]))
@@ -382,13 +389,11 @@ templateEstimate <- function(tagdata,
         p_log <- apply(crds, 1, function(p) {
           zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
           ExpL  <- calibration$MaxL(zX)
-          if(sd(ExpL)<=0.025) -NaN else {
-            diffL <- (ExpL -  x$Light+0.05)
+          diffL <- (ExpL -  x$Light+0.05)
 
-            ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-            sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
                                                               log = exclude))))
-           }
         })
         p_log
       }) %>% Reduce("cbind", .)
@@ -400,14 +405,12 @@ templateEstimate <- function(tagdata,
         p_log <- apply(crds, 1, function(p) {
           zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
           ExpL  <- calibration$MaxL(zX)
-          if(sd(ExpL)<=0.025) -NaN else {
-            diffL <- (ExpL -  x$Light+0.05)
+          diffL <- (ExpL -  x$Light+0.05)
 
-            ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-            sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
                                                               log = exclude))))
-          }
-        })
+          })
         p_log
       }) %>% Reduce("cbind", .)
     }
