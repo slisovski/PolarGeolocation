@@ -365,9 +365,9 @@ templateEstimate <- function(tagdata,
   centr <- map %>% st_centroid() %>% st_transform(4326) %>% st_coordinates()
 
   crds  <- mapRast %>%
-    st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>% st_centroid() %>%
-    mutate(dist = st_distance(., st_point(c(0,0)) %>% st_sfc(crs = st_crs(mapRast)))) %>%
-    filter(as.numeric(dist) >= as.numeric((bbox$polarBuffer*1000))) %>% st_transform(4326) %>%
+    st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>% st_centroid() %>% st_transform(4326) %>%
+    mutate(dist = st_distance(., st_point(c(0,90)) %>% st_sfc(crs = 4326))) %>%
+    filter(as.numeric(dist) >= as.numeric((bbox$polarBuffer*1000))) %>%
     st_coordinates() %>%
     suppressMessages() %>% suppressWarnings()
 
@@ -415,8 +415,8 @@ templateEstimate <- function(tagdata,
       }) %>% Reduce("cbind", .)
     }
 
-    rastOut <-  mapRast %>% st_as_sf(na.rm = ifelse(bbox$mask=='none', FALSE, TRUE)) %>%
-      st_centroid() %>% mutate(p = apply(pOut, 1, max)) %>% dplyr::select(p) %>%
+    rastOut <-  tibble(lon = crds[,1], lat = crds[,2], p = apply(pOut, 1, max)) %>%
+      st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% st_transform(st_crs(mapRast)) %>%
       st_rasterize(st_as_stars(st_bbox(bbox$map), dx = (resolution+2)*1000, dy = (resolution+2)*1000, values = NA_real_)) %>%
       suppressWarnings() %>% suppressMessages()
 
