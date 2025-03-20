@@ -248,11 +248,12 @@ initRegion <- function(tagdata,
       }
 
       ExpL  <- clb$MaxL(zX)
-      diffL <- (ExpL -  dat$Light)+1e-5
+      if(sd(ExpL)<=0.025) -NaN else {
+        diffL <- (ExpL -  tagdata$Light)+1e-5
 
-      ind <- cut(zX, breaks = clb$calibTab[,1], labels = FALSE)
-      sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  clb$calibTab[x,2], clb$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
-
+        ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+        sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
+      }
     }) %>% Reduce("c", .)
 
     parallel::stopCluster(cl)
@@ -274,11 +275,12 @@ initRegion <- function(tagdata,
       }
 
       ExpL  <- calibration$MaxL(zX)
+      if(sd(ExpL)<=0.025) -NaN else {
       diffL <- (ExpL -  tagdata$Light)+1e-5
 
       ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
       sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3], log = ifelse(exclude, TRUE, FALSE)))))
-
+      }
     }) %>% Reduce("c", .)
 
   }
@@ -380,11 +382,13 @@ templateEstimate <- function(tagdata,
         p_log <- apply(crds, 1, function(p) {
           zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
           ExpL  <- calibration$MaxL(zX)
-          diffL <- (ExpL -  x$Light+0.05)
+          if(sd(ExpL)<=0.025) -NaN else {
+            diffL <- (ExpL -  x$Light+0.05)
 
-          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
-                                                            log = exclude))))
+            ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+            sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+                                                              log = exclude))))
+           }
         })
         p_log
       }) %>% Reduce("cbind", .)
@@ -396,11 +400,13 @@ templateEstimate <- function(tagdata,
         p_log <- apply(crds, 1, function(p) {
           zX    <- refracted(zenith(solar(x$Date), p[1], p[2]))
           ExpL  <- calibration$MaxL(zX)
-          diffL <- (ExpL -  x$Light+0.05)
+          if(sd(ExpL)<=0.025) -NaN else {
+            diffL <- (ExpL -  x$Light+0.05)
 
-          ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
-          sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
-                                                            log = exclude, TRUE, FALSE))))
+            ind <- cut(zX, breaks = calibration$calibTab[,1], labels = FALSE)
+            sum(unlist(sapply(unique(ind), function(x) dlnorm(diffL[ind==x],  calibration$calibTab[x, 2], calibration$calibTab[x,3],
+                                                              log = exclude))))
+          }
         })
         p_log
       }) %>% Reduce("cbind", .)
