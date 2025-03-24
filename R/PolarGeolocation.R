@@ -372,8 +372,11 @@ locationSummary <- function(fit, quantile = 0.8, plot = T) {
   tmp <- fit$fit %>% st_as_sf() %>% st_centroid() %>% st_transform(4326) %>%
     mutate(lon = st_coordinates(.)[,1], lat = st_coordinates(.)[,2]) %>% suppressWarnings()
 
-  lon  <- tmp[tmp$p < quantile(tmp$p, probs = quantile),] %>% pull(lon) %>% quantile(., probs = c(0,0.5,1))
-  lat <- tmp[tmp$p < quantile(tmp$p, probs = quantile),] %>% pull(lat) %>% quantile(., probs = c(0,1))
+  lon  <- tmp[tmp$p < min(tmp$p) + diff(range(tmp$p))*quantile,] %>% pull(lon) %>% quantile(., probs = c(0, 0.5, 1))
+  lat  <- tmp[tmp$p < min(tmp$p) + diff(range(tmp$p))*quantile,] %>% pull(lat) %>% quantile(., probs = c(0,1))
+
+  # plot(tmp$lon, tmp$p)
+  # points(lon$lon, lon$p, pch = 16)
 
   t1 <- tibble(mask = 'none', lon = lon[2], lat = lat[1])
 
