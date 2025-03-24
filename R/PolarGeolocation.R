@@ -295,6 +295,7 @@ templateEstimate <- function(tagdata,
                              resolution = 15,
                              adjust = 300,
                              ncores = detectCores(),
+                             contour = TRUE,
                              plot = TRUE) {
 
   sf_use_s2(FALSE)
