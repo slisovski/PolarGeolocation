@@ -85,7 +85,7 @@ getTemplateCalib <- function(tagdata,
   gr    <- cut(z, z_seq, include.lowest = TRUE, labels = FALSE)
 
   calibTab <- cbind(z_seq[-length(z_seq)], do.call("rbind", lapply(sort(unique(gr)), function(g) {
-    x <- abs(mL(z[gr==g] - tagdata$Light[gr==g]))
+    x <- abs(mL(z[gr==g] - tagdata$Light[gr==g]))[!is.na(abs(mL(z[gr==g] - tagdata$Light[gr==g])))]
     if(all(x<0.1)) {
       out = cbind(1, 5)
     } else {
@@ -339,9 +339,9 @@ templateEstimate <- function(tagdata,
 
   stopCluster(cl)
 
-  rastOut <- tibble(lon = crds[,1], lat = crds[,2], p = pOut) %>%
+  rastOut <- tibble(lon = crds[,1], lat = crds[,2], p = pOut) %>% filter(!is.infinite(pOut)) %>%
     st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% st_transform(st_crs(mapRast)) %>%
-    st_rasterize(st_as_stars(st_bbox(bbox$map), dx = (resolution+2)*1000, dy = (resolution+2)*1000, values = NA_real_)) %>%
+    st_rasterize(st_as_stars(st_bbox(mapRast), dx = (resolution+2)*1000, dy = (resolution+2)*1000, values = NA_real_)) %>%
     suppressWarnings() %>% suppressMessages()
 
   cont    <- st_contour(rastOut, breaks = quantile(rastOut[[1]], probs = seq(0, 0.4, length = 10), na.rm = T))
