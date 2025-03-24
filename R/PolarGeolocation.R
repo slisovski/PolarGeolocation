@@ -169,7 +169,7 @@ initRegion <- function(tagdata,
   if(ncores>1) {
 
     cl <- makeCluster(getOption("cl.cores", ncores))
-    clusterExport(cl, c('dat', 'clb', 'adj', 'crd', 'zenith', 'solar', 'refracted', 'exclude'), envir = environment())
+    clusterExport(cl, c('dat', 'clb', 'adj', 'crd', 'zenith', 'solar', 'refracted'), envir = environment())
 
     parOut <- parLapply(cl, 1:nrow(crd), function(x) {
 
